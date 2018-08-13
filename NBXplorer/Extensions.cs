@@ -26,6 +26,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using Microsoft.AspNetCore.Authentication;
 using NBXplorer.Authentication;
+using NBitcoin.DataEncoders;
 
 namespace NBXplorer
 {
@@ -50,6 +51,33 @@ namespace NBXplorer
 		{
 			var data = Encoding.UTF8.GetBytes(derivation.ToString());
 			return new uint160(Hashes.RIPEMD160(data, data.Length));
+		}
+
+		public static async Task<Transaction> GetRawTransactionAsync(this RPCClient client, uint256 txid, uint256 blockId, bool throwIfNotFound = true)
+		{
+			var response = await client.SendCommandAsync(new RPCRequest(RPCOperations.getrawtransaction, new object[] { txid, false, blockId }), throwIfNotFound).ConfigureAwait(false);
+			if(throwIfNotFound)
+				response.ThrowIfError();
+			if(response.Error != null && response.Error.Code == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+				return null;
+
+			response.ThrowIfError();
+			var tx = client.Network.Consensus.ConsensusFactory.CreateTransaction();
+			tx.ReadWrite(Encoders.Hex.DecodeData(response.Result.ToString()));
+			return tx;
+		}
+		public static async Task<DateTimeOffset?> GetBlockTimeAsync(this RPCClient client, uint256 blockId, bool throwIfNotFound = true)
+		{
+			var response = await client.SendCommandAsync(new RPCRequest("getblockheader", new object[] { blockId }), throwIfNotFound).ConfigureAwait(false);
+			if(throwIfNotFound)
+				response.ThrowIfError();
+			if(response.Error != null && response.Error.Code == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+				return null;
+			if(response.Result["time"] != null)
+			{
+				return NBitcoin.Utils.UnixTimeToDateTime((uint)response.Result["time"]);
+			}
+			return null;
 		}
 
 		public static IEnumerable<TransactionMatch> GetMatches(this Repository repository, Transaction tx)
@@ -108,26 +136,21 @@ namespace NBXplorer
 
 		public class ConfigureCookieFileBasedConfiguration : IConfigureNamedOptions<BasicAuthenticationOptions>
 		{
-			ExplorerConfiguration _Configuration;
-			public ConfigureCookieFileBasedConfiguration(ExplorerConfiguration configuration)
+			CookieRepository _CookieRepo;
+			public ConfigureCookieFileBasedConfiguration(CookieRepository cookieRepo)
 			{
-				_Configuration = configuration;
+				_CookieRepo = cookieRepo;
 			}
 
 			public void Configure(string name, BasicAuthenticationOptions options)
 			{
 				if(name == "Basic")
 				{
-					if(!_Configuration.NoAuthentication)
+					var creds = _CookieRepo.GetCredentials();
+					if(creds != null)
 					{
-						var cookieFile = Path.Combine(_Configuration.DataDir, ".cookie");
-						var pass = new uint256(RandomUtils.GetBytes(32));
-						var user = "__cookie__";
-						var cookieStr = user + ":" + pass;
-						File.WriteAllText(cookieFile, cookieStr);
-
-						options.Username = user;
-						options.Password = pass.ToString();
+						options.Username = creds.UserName;
+						options.Password = creds.Password;
 					}
 				}
 			}
@@ -158,6 +181,7 @@ namespace NBXplorer
 			services.AddSingleton<IConfigureOptions<MvcJsonOptions>, MVCConfigureOptions>();
 			services.TryAddSingleton<ChainProvider>();
 
+			services.TryAddSingleton<CookieRepository>();
 			services.TryAddSingleton<RepositoryProvider>();
 			services.TryAddSingleton<EventAggregator>();
 			services.TryAddSingleton<BitcoinDWaitersAccessor>();

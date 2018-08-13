@@ -149,6 +149,10 @@ Optional Parameters:
 
 * `includeTransaction` includes the hex of the transaction, not only information (default: true)
 
+Error codes:
+
+* HTTP 404: Transaction not found
+
 Returns:
 
 ```
@@ -194,6 +198,11 @@ Returns:
 
 HTTP GET v1/cryptos/{cryptoCode}/derivations/{derivationScheme}/addresses/unused
 
+Error codes:
+
+* HTTP 404: `cryptoCode-not-supported`
+* HTTP 400: `strategy-not-found`
+
 Optional parameters:
 
 * `feature`: Use `Deposit` to get a deposit address (`0/x`), `Change` to get a change address (`1/x`), or `Direct` to get `x` (default: `Deposit`)
@@ -218,6 +227,10 @@ Note: `redeem` is returning the segwit redeem if the derivation scheme is a P2SH
 
 HTTP GET v1/cryptos/{cryptoCode}/scripts/{script}
 
+Error codes:
+
+* HTTP 404: `cryptoCode-not-supported`
+
 Returns:
 ```
 [
@@ -240,6 +253,10 @@ Optional parameters:
 * `unconfirmedBookmarks` bookmarks known by the client of UTXOs which have not yet been mined.
 * `confirmedBookmarks` bookmarks known by the client of UTXOs which have been mined.
 * `longPolling` blocks the call until a change happens since the passed bookmarks (default: false)
+
+Error:
+
+* HTTP 404: `cryptoCode-not-supported`
 
 Result:
 
@@ -381,11 +398,16 @@ If you want all transactions of all derivation schemes of all crypto currencies,
 
 ## Broadcast a transaction
 
-HTTP POST cryptos/{cryptoCode}/transactions
+HTTP POST v1/cryptos/{cryptoCode}/transactions
 
 Body:
 
 Raw bytes of the transaction.
+
+Error codes:
+
+* HTTP 404: `cryptoCode-not-supported`
+* HTTP 400: `rpc-unavailable`
 
 Returns:
 
@@ -398,11 +420,60 @@ Returns:
 }
 ```
 
+## Rescan a transaction
+
+NBXplorer does not rescan the whole blockchain when tracking a new derivation scheme.
+This means that if the derivation scheme already received UTXOs in the past, NBXplorer will not be aware of it and might reuse addresses already generated in the past, and will not show past transactions.
+
+By using this route, you can ask NBXplorer to rescan specific transactions found in the blockchain.
+This way, the transactions and the UTXOs present before tracking the derivation scheme will appear correctly.
+
+HTTP POST v1/cryptos/{cryptoCode}/rescan
+
+Body:
+
+```
+{  
+   "transactions":[  
+      # Specify the blockId and transactionId to scan. Your node must not be pruned for this to work.
+      {  
+         "blockId":"19b44484c79c40d4e74da406e25390348b86a252c1ab784cfd7198c724a0169f",
+         "transactionId":"f83c7f31e2c39202bbbca619ab354ca8841721cf3440a253e056a7bea43e9745",
+      },
+      # Only the transactionId is specified. Your node must run --txindex=1 for this to work
+      {  
+         "transactionId":"754c14060b958de0ff4e77e2ccdca617964c939d40ec9a01ef21fca2aad78d00",
+      },
+      # This will index the transaction without using RPC. Careful: A wrong blockId will corrupt the database.
+      {  
+         "blockId":"19b44484c79c40d4e74da406e25390348b86a252c1ab784cfd7198c724a0169f",
+         "transaction":"02000000000101008dd7aaa2fc21ef019aec409d934c9617a6dccce2774effe08d950b06144c750000000000feffffff026c3e2e12010000001600143072110b34b66acd9469b2882d6d57a8ae27183900e1f505000000001600140429b3eebb7d55c50ca36ace12ae874ff2fd16af0247304402202e32739cc6e42877699d4159159941f3cc39027c7626f9962cca9a865816d43502205389e9d6c1a4cab41f2c504413cf0f46a5c1f8814f368e03c9bf1f8017c6787e012103b8858085f2a0c9c906fb793bedb2c115c340de1f7b279d6099f675ddf3eec0bf67000000"
+      }
+   ]
+}
+```
+
+Returns:
+
+HTTP 200
+
+Error codes:
+
+* HTTP 400: `rpc-unavailable`
+
 ## Get fee rate
 
-HTTP GET cryptos/{cryptoCode}/fees/{blockCount}
+HTTP GET v1/cryptos/{cryptoCode}/fees/{blockCount}
 
 Get expected fee rate for being confirmed in `blockCount` blocks.
+
+Error codes:
+
+* HTTP 400: `fee-estimation-unavailable`
+* HTTP 404: `cryptoCode-not-supported`
+* HTTP 400: `rpc-unavailable`
+
+Returns:
 
 ```
 {

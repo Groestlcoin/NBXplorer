@@ -17,6 +17,7 @@ using Microsoft.AspNetCore.Http.Features;
 using NBXplorer.Filters;
 using NBXplorer.Logging;
 using Microsoft.AspNetCore.Authentication;
+using NBXplorer.Authentication;
 
 namespace NBXplorer
 {
@@ -45,15 +46,16 @@ namespace NBXplorer
 				.AddNBXplorerAuthentication();
 		}
 
-		public void Configure(IApplicationBuilder app, IServiceProvider prov, IHostingEnvironment env, ILoggerFactory loggerFactory, IServiceProvider serviceProvider)
+		public void Configure(IApplicationBuilder app, IServiceProvider prov, IHostingEnvironment env, ILoggerFactory loggerFactory, IServiceProvider serviceProvider,
+			CookieRepository cookieRepository)
 		{
+			cookieRepository.Initialize();
 			if(env.IsDevelopment())
 			{
 				app.UseDeveloperExceptionPage();
 			}
 
 			Logs.Configure(loggerFactory);
-
 			app.UseAuthentication();
 			app.UseWebSockets();
 			app.UseMvc();
