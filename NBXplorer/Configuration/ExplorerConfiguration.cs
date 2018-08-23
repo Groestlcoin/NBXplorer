@@ -113,6 +113,7 @@ namespace NBXplorer.Configuration
 					var chainConfiguration = new ChainConfiguration();
 					chainConfiguration.Rescan = config.GetOrDefault<bool>($"{network.CryptoCode}.rescan", false);
 					chainConfiguration.CryptoCode = network.CryptoCode;
+
 					var args = RPCArgs.Parse(config, network.NBitcoinNetwork, network.CryptoCode);
 					chainConfiguration.RPC = args.ConfigureRPCClient(network);
 					if((chainConfiguration.RPC.CredentialString.CookieFile != null || chainConfiguration.RPC.CredentialString.UseDefault) && !network.SupportCookieAuthentication)
@@ -150,7 +151,7 @@ namespace NBXplorer.Configuration
 		{
 			return ChainConfigurations.Any(c => network.CryptoCode == c.CryptoCode);
 		}
-		
+
 		public bool CacheChain
 		{
 			get;
