@@ -77,53 +77,14 @@ namespace NBXplorer
 			return null;
 		}
 
-		public static IEnumerable<TransactionMatch> GetMatches(this Repository repository, Transaction tx)
+		public static NewTransactionEvent SetMatch(this NewTransactionEvent evt, TrackedTransaction match)
 		{
-			var matches = new Dictionary<string, TransactionMatch>();
-			HashSet<Script> inputScripts = new HashSet<Script>();
-			HashSet<Script> outputScripts = new HashSet<Script>();
-			HashSet<Script> scripts = new HashSet<Script>();
-			foreach(var input in tx.Inputs)
-			{
-				var signer = input.GetSigner();
-				if(signer != null)
-				{
-					inputScripts.Add(signer.ScriptPubKey);
-					scripts.Add(signer.ScriptPubKey);
-				}
-			}
-
-			foreach(var output in tx.Outputs)
-			{
-				outputScripts.Add(output.ScriptPubKey);
-				scripts.Add(output.ScriptPubKey);
-			}
-
-			var keyInformations = repository.GetKeyInformations(scripts.ToArray());
-			foreach(var keyInfoByScripts in keyInformations)
-			{
-				foreach(var keyInfo in keyInfoByScripts.Value)
-				{
-					var matchesGroupingKey = keyInfo.DerivationStrategy?.ToString() ?? keyInfo.ScriptPubKey.ToHex();
-					if (!matches.TryGetValue(matchesGroupingKey, out TransactionMatch match))
-					{
-						match = new TransactionMatch();
-						matches.Add(matchesGroupingKey, match);
-						match.TrackedSource = keyInfo.TrackedSource;
-						match.DerivationStrategy = (keyInfo.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
-						match.Transaction = tx;
-					}
-
-					if(outputScripts.Contains(keyInfo.ScriptPubKey))
-						match.Outputs.Add(keyInfo);
-
-					if(inputScripts.Contains(keyInfo.ScriptPubKey))
-						match.Inputs.Add(keyInfo);
-				}
-			}
-			return matches.Values;
+			evt.TrackedSource = match.TrackedSource;
+			var derivation = (match.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
+			evt.Outputs.AddRange(match.GetReceivedOutputs(evt.TrackedSource));
+			evt.DerivationStrategy = derivation;
+			return evt;
 		}
-
 
 		class MVCConfigureOptions : IConfigureOptions<MvcJsonOptions>
 		{
@@ -186,6 +147,8 @@ namespace NBXplorer
 			services.TryAddSingleton<AddressPoolServiceAccessor>();
 			services.AddSingleton<IHostedService, AddressPoolService>();
 			services.TryAddSingleton<BitcoinDWaitersAccessor>();
+			services.AddSingleton<IHostedService, ScanUTXOSetService>();
+			services.TryAddSingleton<ScanUTXOSetServiceAccessor>();
 			services.AddSingleton<IHostedService, BitcoinDWaiters>();
 			services.AddSingleton<IHostedService, BrokerHostedService>();
 

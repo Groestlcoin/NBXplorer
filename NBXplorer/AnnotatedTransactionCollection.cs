@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using NBXplorer.Models;
 
 namespace NBXplorer
 {
@@ -16,12 +17,10 @@ namespace NBXplorer
 	}
 	public class AnnotatedTransaction
 	{
-		public AnnotatedTransaction()
-		{
-
-		}
 		public AnnotatedTransaction(TrackedTransaction tracked, SlimChain chain)
 		{
+			if (tracked == null)
+				throw new ArgumentNullException(nameof(tracked));
 			Record = tracked;
 			if(tracked.BlockHash == null)
 			{
@@ -29,7 +28,7 @@ namespace NBXplorer
 			}
 			else
 			{
-				var block = chain.GetBlock(tracked.BlockHash);
+				var block = chain?.GetBlock(tracked.BlockHash);
 				Type = block == null ? AnnotatedTransactionType.Orphan : AnnotatedTransactionType.Confirmed;
 				Height = block?.Height;
 			}
@@ -46,38 +45,34 @@ namespace NBXplorer
 		public TrackedTransaction Record
 		{
 			get;
-			internal set;
 		}
 
 		public override string ToString()
 		{
-			return Record?.Transaction?.GetHash()?.ToString() ?? "";
+			return Record.TransactionHash.ToString();
 		}
 	}
 
 	public class AnnotatedTransactionCollection : List<AnnotatedTransaction>
 	{
-		public AnnotatedTransactionCollection(IEnumerable<AnnotatedTransaction> transactions) : base(transactions)
+		public AnnotatedTransactionCollection(IEnumerable<AnnotatedTransaction> transactions, Models.TrackedSource trackedSource) : base(transactions)
 		{
 			foreach(var tx in transactions)
 			{
-				var h = tx.Record.Transaction.GetHash();
-				_TxById.Add(h, tx);
-				foreach(var keyPathInfo in tx.Record.TransactionMatch.Inputs.Concat(tx.Record.TransactionMatch.Outputs))
+				_TxById.Add(tx.Record.TransactionHash, tx);
+				foreach(var keyPathInfo in tx.Record.KnownKeyPathMapping)
 				{
-					if(keyPathInfo.KeyPath != null)
-						_KeyPaths.TryAdd(keyPathInfo.ScriptPubKey, keyPathInfo.KeyPath);
+					_KeyPaths.TryAdd(keyPathInfo.Key, keyPathInfo.Value);
 				}
 			}
 
-
 			UTXOState state = new UTXOState();
 			foreach(var confirmed in transactions
-										.Where(tx => tx.Type == AnnotatedTransactionType.Confirmed)
+										.Where(tx => tx.Type == AnnotatedTransactionType.Confirmed).ToList()
 										.TopologicalSort())
 			{
-				if(state.Apply(confirmed.Record.Transaction) == ApplyTransactionResult.Conflict
-					|| !ConfirmedTransactions.TryAdd(confirmed.Record.Transaction.GetHash(), confirmed))
+				if(state.Apply(confirmed.Record) == ApplyTransactionResult.Conflict
+					|| !ConfirmedTransactions.TryAdd(confirmed.Record.TransactionHash, confirmed))
 				{
 					Logs.Explorer.LogError("A conflict among confirmed transaction happened, this should be impossible");
 					throw new InvalidOperationException("The impossible happened");
@@ -87,16 +82,17 @@ namespace NBXplorer
 			foreach(var unconfirmed in transactions
 										.Where(tx => tx.Type == AnnotatedTransactionType.Unconfirmed || tx.Type == AnnotatedTransactionType.Orphan)
 										.OrderByDescending(t => t.Record.Inserted) // OrderByDescending so that the last received is least likely to be conflicted
+										.ToList()
 										.TopologicalSort())
 			{
-				var hash = unconfirmed.Record.Transaction.GetHash();
+				var hash = unconfirmed.Record.TransactionHash;
 				if(ConfirmedTransactions.ContainsKey(hash))
 				{
 					DuplicatedTransactions.Add(unconfirmed);
 				}
 				else
 				{
-					if(state.Apply(unconfirmed.Record.Transaction) == ApplyTransactionResult.Conflict)
+					if(state.Apply(unconfirmed.Record) == ApplyTransactionResult.Conflict)
 					{
 						ReplacedTransactions.TryAdd(hash, unconfirmed);
 					}
@@ -109,16 +105,16 @@ namespace NBXplorer
 					}
 				}
 			}
+
+			TrackedSource = trackedSource;
 		}
 
-		public TxOut GetUTXO(OutPoint outpoint)
+		public MatchedOutput GetUTXO(OutPoint outpoint)
 		{
 			if(_TxById.TryGetValue(outpoint.Hash, out var txs))
 			{
-				var tx = txs.First().Record.Transaction;
-				if(outpoint.N >= tx.Outputs.Count)
-					return null;
-				return tx.Outputs[outpoint.N];
+				return txs.SelectMany(t => t.Record.GetReceivedOutputs(TrackedSource).Where(c => c.Index == outpoint.N))
+						  .FirstOrDefault();
 			}
 			return null;
 		}
@@ -159,6 +155,7 @@ namespace NBXplorer
 		{
 			get; set;
 		} = new List<AnnotatedTransaction>();
+		public Models.TrackedSource TrackedSource { get; }
 	}
 
 }

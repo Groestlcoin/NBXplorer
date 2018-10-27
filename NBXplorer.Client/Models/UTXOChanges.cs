@@ -168,11 +168,14 @@ namespace NBXplorer.Models
 		public UTXO(Coin coin)
 		{
 			Outpoint = coin.Outpoint;
+			Index = (int)coin.Outpoint.N;
+			TransactionHash = coin.Outpoint.Hash;
 			Value = coin.TxOut.Value;
 			ScriptPubKey = coin.TxOut.ScriptPubKey;
 		}
 
 		[JsonConverter(typeof(Newtonsoft.Json.Converters.StringEnumConverter))]
+		[JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
 		public DerivationFeature? Feature
 		{
 			get; set;
@@ -210,7 +213,8 @@ namespace NBXplorer.Models
 			}
 		}
 
-
+		public int Index { get; set; }
+		public uint256 TransactionHash { get; set; }
 
 		Script _ScriptPubKey;
 		public Script ScriptPubKey

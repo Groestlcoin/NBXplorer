@@ -72,18 +72,12 @@ namespace NBXplorer.MessageBrokers
 					return;
 				var txe = new Models.NewTransactionEvent()
 				{
-					TrackedSource = o.Match.TrackedSource,
-					DerivationStrategy = o.Match.DerivationStrategy,
 					CryptoCode = o.CryptoCode,
 					BlockId = o.BlockId,
 					TransactionData = Utils.ToTransactionResult(true, chain, new[] { o.SavedTransaction }),
-					Inputs = o.Match.Inputs,
-					Outputs = o.Match.Outputs
-				};
+				}.SetMatch(o.TrackedTransaction);
 				await _senderTransactions.Send(txe);
 			}));
-
-			Logs.Configuration.LogInformation("Starting Azure Service Bus Message Broker");
 			return Task.CompletedTask;
 		}
 
