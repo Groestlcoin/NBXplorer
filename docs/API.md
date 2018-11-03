@@ -102,7 +102,6 @@ Returns:
           {
             "keyPath": "0/0",
             "scriptPubKey": "001452f88af314ef3b6d03d40a5fd1f2c906188a4775",
-            "redeem": null,
             "index": 1,
             "value": 100000000
           }
@@ -127,7 +126,6 @@ Returns:
           {
             "keyPath": "0",
             "scriptPubKey": "0014b39fc4eb5c6dd238d39449b70a2e30d575426d99",
-            "redeem": null,
             "index": 1,
             "value": 100000000
           }
@@ -179,9 +177,7 @@ Returns:
         "transaction": "020000000166d6befa387fd646f77a10e4b0f0e66b3569f18a83f77104a0c440e4156f80890000000048473044022064b1398653171440d3e79924cb6593633e7b2c3d80b60a2e21d6c6e287ee785a02203899009df443d0a0a1b06cb970aee0158d35166fd3e26d4e3e85570738e706d101feffffff028c02102401000000160014ee0a1889783da2e1f9bba47be4184b6610efd00400e1f5050000000016001452f88af314ef3b6d03d40a5fd1f2c906188a477567000000",
         "outputs": [
           {
-            "keyPath": "0/0",
             "scriptPubKey": "001452f88af314ef3b6d03d40a5fd1f2c906188a4775",
-            "redeem": null,
             "index": 1,
             "value": 100000000
           }
@@ -204,9 +200,7 @@ Returns:
         "transaction": null,
         "outputs": [
           {
-            "keyPath": "0",
             "scriptPubKey": "0014b39fc4eb5c6dd238d39449b70a2e30d575426d99",
-            "redeem": null,
             "index": 1,
             "value": 100000000
           }
@@ -665,9 +659,9 @@ NBXplorer can scan the UTXO Set for output belonging to your derivationScheme.
 HTTP POST v1/cryptos/BTC/derivations/{derivationScheme}/utxos/scan
 
 In order to not consume too much RAM, NBXplorer splits the addresses to scan in several `batch` and scan the whole UTXO set sequentially.
-Three branches are scanned: 0/*, 1/* and *.
+Three branches are scanned: 0/x, 1/x and x.
 
-In UTXOs in one branch get found, all the addresses of an inferior index before will be considered used.
+If a UTXO in one branch get found at a specific x, then all addresses inferior to index x will be considered used and not proposed when fetching a new unused address.
 
 Query parameters:
 
@@ -703,14 +697,14 @@ The state can be:
     "completedAt": null,
     "found": 2,
     "batchNumber": 9,
-	"remainingBatches": 1,
+    "remainingBatches": 1,
     "currentBatchProgress": 50,
-	"remainingSeconds": 10,
+    "remainingSeconds": 10,
     "overallProgress": 91,
     "from": 900,
     "count": 100,
     "totalSearched": 2700,
-	"TotalSizeOfUTXOSet": null,
+    "totalSizeOfUTXOSet": null,
     "highestKeyIndexFound": {
       "change": null,
       "deposit": 51,

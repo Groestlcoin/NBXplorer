@@ -322,6 +322,7 @@ namespace NBXplorer.Tests
 		CancellationToken Cancel => new CancellationTokenSource(5000).Token;
 
 		[Fact]
+		[Trait("Azure", "Azure")]
 		public async Task CanSendAzureServiceBusNewBlockEventMessage()
 		{
 
@@ -419,6 +420,7 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
+		[Trait("Azure", "Azure")]
 		public async Task CanSendAzureServiceBusNewTransactionEventMessage()
 		{
 			Assert.False(string.IsNullOrWhiteSpace(AzureServiceBusTestConfig.ConnectionString), "Please Set Azure Service Bus Connection string in TestConfig.cs AzureServiceBusTestConfig Class.");
@@ -781,7 +783,6 @@ namespace NBXplorer.Tests
 						Assert.Equal(txOut.Value, output.Value);
 						var derived = ((DerivationSchemeTrackedSource)txEvent.TrackedSource).DerivationStrategy.Derive(output.KeyPath);
 						Assert.Equal(derived.ScriptPubKey, txOut.ScriptPubKey);
-						Assert.Equal(derived.Redeem, output.Redeem);
 					}
 					Assert.Contains(txEvent.DerivationStrategy.ToString(), schemes);
 					schemes.Remove(txEvent.DerivationStrategy.ToString());
@@ -840,6 +841,7 @@ namespace NBXplorer.Tests
 
 				tester.RPC.EnsureGenerate(1);
 
+				var o = utxoAlice;
 				utxoAlice = tester.Client.GetUTXOs(alicePubKey, utxoAlice);
 				utxoBob = tester.Client.GetUTXOs(bobPubKey, utxoBob);
 
