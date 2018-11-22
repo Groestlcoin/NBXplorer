@@ -42,13 +42,6 @@ For multisig, the public keys are ordered before generating the address by defau
 
 You can use more than one options at same time, example: `2-of-xpub1-xpub2-[legacy]-[keeporder]`
 
-## Bookmarks
-
-Some routes allow the user to specify a bookmark.
-Bookmark are used to decrease the traffic between NBXplorer and the client by providing a way for the client to give his current state.
-
-NBXplorer will then just transmit what changed from the client's known state.
-
 ## CryptoCode
 
 Most of routes asks for a crypto code. This identify the crypto currency to request data from. Currently supported is `BTC` and `LTC`.
@@ -77,11 +70,7 @@ HTTP GET v1/cryptos/{cryptoCode}/derivations/{derivationScheme}/transactions
 
 Optional Parameters:
 
-* `unconfirmedBookmarks` bookmarks known by the client of transactions which have not yet been mined.
-* `confirmedBookmarks` bookmarks known by the client of transactions which have been mined.
-* `replacedBookmarks` bookmark known by the client of transactions which have been replaced. (RBF)
 * `includeTransaction` includes the hex of the transaction, not only information (default: true)
-* `longPolling` blocks the call until a change happens since the passed bookmarks (default: false)
 
 Returns:
 
@@ -89,8 +78,6 @@ Returns:
 {
   "height": 104,
   "confirmedTransactions": {
-    "knownBookmark": null,
-    "bookmark": "94450a854f44e66e0f86b3dab20db07d1e147a5f",
     "transactions": [
       {
         "blockHash": "3e7bcca309f92ab78a47c1cdd1166de9190fa49e97165c93e2b10ae1a14b99eb",
@@ -113,8 +100,6 @@ Returns:
     ]
   },
   "unconfirmedTransactions": {
-    "knownBookmark": null,
-    "bookmark": "ef91fe23d5649d708cc5e22cdb67c17ad4131893",
     "transactions": [
       {
         "blockHash": null,
@@ -137,14 +122,10 @@ Returns:
     ]
   },
   "replacedTransactions": {
-    "knownBookmark": null,
-    "bookmark": "0000000000000000000000000000000000000000",
     "transactions": []
   }
 }
 ```
-
-If `knownBookmark` is not null, the response is just a differential on the state the client already know on top of the specified bookmark.
 
 ## Query transactions associated to a specific address
 
@@ -154,11 +135,7 @@ HTTP GET v1/cryptos/{cryptoCode}/addresses/{address}/transactions
 
 Optional Parameters:
 
-* `unconfirmedBookmarks` bookmarks known by the client of transactions which have not yet been mined.
-* `confirmedBookmarks` bookmarks known by the client of transactions which have been mined.
-* `replacedBookmarks` bookmark known by the client of transactions which have been replaced. (RBF)
 * `includeTransaction` includes the hex of the transaction, not only information (default: true)
-* `longPolling` blocks the call until a change happens since the passed bookmarks (default: false)
 
 Returns:
 
@@ -166,8 +143,6 @@ Returns:
 {
   "height": 104,
   "confirmedTransactions": {
-    "knownBookmark": null,
-    "bookmark": "94450a854f44e66e0f86b3dab20db07d1e147a5f",
     "transactions": [
       {
         "blockHash": "3e7bcca309f92ab78a47c1cdd1166de9190fa49e97165c93e2b10ae1a14b99eb",
@@ -189,8 +164,6 @@ Returns:
     ]
   },
   "unconfirmedTransactions": {
-    "knownBookmark": null,
-    "bookmark": "ef91fe23d5649d708cc5e22cdb67c17ad4131893",
     "transactions": [
       {
         "blockHash": null,
@@ -212,14 +185,45 @@ Returns:
     ]
   },
   "replacedTransactions": {
-    "knownBookmark": null,
-    "bookmark": "0000000000000000000000000000000000000000",
     "transactions": []
   }
 }
 ```
 
-If `knownBookmark` is not null, the response is just a differential on the state the client already know on top of the specified bookmark.
+## Query a single transaction associated to a address or derivation scheme
+
+HTTP GET v1/cryptos/{cryptoCode}/derivations/{derivationScheme}/transactions/{txId}
+HTTP GET v1/cryptos/{cryptoCode}/addresses/{address}/transactions/{txId}
+
+Error codes:
+
+* HTTP 404: Transaction not found
+
+Optional Parameters:
+
+* `includeTransaction` includes the hex of the transaction, not only information (default: true)
+
+Returns:
+
+```json
+{
+    "blockHash": null,
+    "confirmations": 0,
+    "height": null,
+    "transactionId": "7ec0bcbd3b7685b6bbdb4287a250b64bfcb799dbbbcffa78c00e6cc11185e5f1",
+    "transaction": null,
+    "outputs": [
+        {
+        "scriptPubKey": "0014b39fc4eb5c6dd238d39449b70a2e30d575426d99",
+        "index": 1,
+        "value": 100000000
+        }
+    ],
+    "inputs": [],
+    "timestamp": 1540381889,
+    "balanceChange": 100000000
+}
+```
 
 ## Get a transaction
 
@@ -335,12 +339,6 @@ Returns:
 
 HTTP GET v1/cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos
 
-Optional parameters:
-
-* `unconfirmedBookmarks` bookmarks known by the client of UTXOs which have not yet been mined.
-* `confirmedBookmarks` bookmarks known by the client of UTXOs which have been mined.
-* `longPolling` blocks the call until a change happens since the passed bookmarks (default: false)
-
 Error:
 
 * HTTP 404: `cryptoCode-not-supported`
@@ -353,8 +351,6 @@ Result:
   "derivationStrategy": "tpubD6NzVbkrYhZ4XQVi1sSEDBWTcicDqVSCTnYDxpwGwcSZVbPii2b7baRg57YfL64ed36sBRe6GviihHwhy3D1cnBe5uXb27DjrDZCKUA7PQi",
   "currentHeight": 107,
   "unconfirmed": {
-    "knownBookmark": "0000000000000000000000000000000000000000",
-    "bookmark": "643f962b04336a1046b3ac858cb5f76472691365",
     "utxOs": [
       {
         "feature": "Deposit",
@@ -372,8 +368,6 @@ Result:
     "hasChanges": true
   },
   "confirmed": {
-    "knownBookmark": "09612373e3107ceeef87e7eff4d4782dc11c0db6",
-    "bookmark": "4ac671787bbaf2167ed1616dd1abb8b6ea241e34",
     "utxOs": [
       {
         "feature": "Deposit",
@@ -404,12 +398,6 @@ Assuming you use Track on this specific address:
 
 HTTP GET v1/cryptos/{cryptoCode}/addresses/{address}/utxos
 
-Optional parameters:
-
-* `unconfirmedBookmarks` bookmarks known by the client of UTXOs which have not yet been mined.
-* `confirmedBookmarks` bookmarks known by the client of UTXOs which have been mined.
-* `longPolling` blocks the call until a change happens since the passed bookmarks (default: false)
-
 Error:
 
 * HTTP 404: `cryptoCode-not-supported`
@@ -421,15 +409,11 @@ Result:
   "trackedSource": "ADDRESS:moD8QpWufPMFP9y7gC8m5ih9rmejavbf3K",
   "currentHeight": 105,
   "unconfirmed": {
-    "knownBookmark": null,
-    "bookmark": "0000000000000000000000000000000000000000",
     "utxOs": [],
     "spentOutpoints": [],
     "hasChanges": true
   },
   "confirmed": {
-    "knownBookmark": null,
-    "bookmark": "0b6f1af55d1bd86a3dbe2cadc45e7dde9b536e99",
     "utxOs": [
       {
         "outpoint": "f532022bebe8d90c72853a2663c26ca9d42fad5d9cde21d35bad38135a5dfd0701000000",
@@ -721,3 +705,59 @@ The state can be:
 Error codes:
 
 * HTTP 404 `scanutxoset-info-not-found` if the scan has been done above the last 24H.
+
+## Query event stream
+
+All notifications sent through websocket are also saved in a crypto specifc event stream.
+
+HTTP GET v1/cryptos/{cryptoCode}/events
+
+Query parameters:
+
+* `lastEventId`: Will query all events which happened after this event id, the first event has id 1 (default: 0)
+* `longPolling`: If no events have been received since `lastEventId`, the call will block (default: false)
+* `limit`: Limit the maximum number of events to return (default: null)
+
+All events are registered in a query stream which you can replay by keeping track of the `lastEventId`.
+The smallest `eventId` is 1.
+
+```json
+[
+  {
+    "eventId": 1,
+    "type": "newblock",
+    "data": {
+      "height": 104,
+      "hash": "1f31c605c0a5d54b65fa39dc8cb4db025be63c66280279ade9338571a9e63d35",
+      "previousBlockHash": "7639350b31f3ce07ff976ebae772fef1602b30a10ccb8ca69047fe0fe8b9083c",
+      "cryptoCode": "BTC",
+    }
+  },
+  {
+    "eventId": 2,
+    "type": "newtransaction",
+    "data": {
+      "blockId": null,
+      "trackedSource": "DERIVATIONSCHEME:tpubD6NzVbkrYhZ4XfeFUTn2D4RQ7D5HpvnHywa3eZYhxZBriRTsfe8ZKFSDMcEMBqGrAighxxmq5VUqoRvo7DnNMS5VbJjRHwqDfCAMXLwAL5j",
+      "derivationStrategy": "tpubD6NzVbkrYhZ4XfeFUTn2D4RQ7D5HpvnHywa3eZYhxZBriRTsfe8ZKFSDMcEMBqGrAighxxmq5VUqoRvo7DnNMS5VbJjRHwqDfCAMXLwAL5j",
+      "transactionData": {
+        "confirmations": 0,
+        "blockId": null,
+        "transactionHash": "500359d971698c021587ea952bd38bd57dafc2b99615f71f7f978af394682737",
+        "transaction": "0200000001b8af58c5dbed4bd0ea60ae8ba7e68e66143440b8c1c69b6eaaf719566676ab1b0000000048473044022040b419aeb9042a53fb2d03abec911901ed42fc50d6a143e322bc61d51e4e35a9022073c10fe827b53332d50fbde581e36ad31f57b98ec35a125562dc8c739762ec8901feffffff028c02102401000000160014b6bedaf0cb795c01a1e427bd7752d6ef058964f100e1f50500000000160014c5e0b07f40b8dbe69b22864d84d83d5b4120835368000000",
+        "height": null,
+        "timestamp": 1542703963
+      },
+      "outputs": [
+        {
+          "keyPath": "0/0",
+          "scriptPubKey": "0014c5e0b07f40b8dbe69b22864d84d83d5b41208353",
+          "index": 1,
+          "value": 100000000
+        }
+      ],
+      "cryptoCode": "BTC",
+    }
+  }
+]
+```

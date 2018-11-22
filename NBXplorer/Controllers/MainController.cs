@@ -269,34 +269,21 @@ namespace NBXplorer.Controllers
 
 			WebsocketMessageListener server = new WebsocketMessageListener(await HttpContext.WebSockets.AcceptWebSocketAsync(), _SerializerSettings);
 			CompositeDisposable subscriptions = new CompositeDisposable();
-			subscriptions.Add(_EventAggregator.Subscribe<Events.NewBlockEvent>(async o =>
+			subscriptions.Add(_EventAggregator.Subscribe<Models.NewBlockEvent>(async o =>
 			{
 				if (listenedBlocks.ContainsKey(o.CryptoCode))
 				{
-					var chain = ChainProvider.GetChain(o.CryptoCode);
-					if (chain == null)
-						return;
-					var block = chain.GetBlock(o.BlockId);
-					if (block != null)
-					{
-						await server.Send(new Models.NewBlockEvent()
-						{
-							CryptoCode = o.CryptoCode,
-							Hash = block.Hash,
-							Height = block.Height,
-							PreviousBlockHash = block?.Previous
-						});
-					}
+					await server.Send(o);
 				}
 			}));
-			subscriptions.Add(_EventAggregator.Subscribe<Events.NewTransactionMatchEvent>(async o =>
+			subscriptions.Add(_EventAggregator.Subscribe<Models.NewTransactionEvent>(async o =>
 			{
 				var network = Waiters.GetWaiter(o.CryptoCode);
 				if (network == null)
 					return;
 
 				bool forward = false;
-				var derivationScheme = (o.TrackedTransaction.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
+				var derivationScheme = (o.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
 				if (derivationScheme != null)
 				{
 					forward |= listenAllDerivationSchemes == "*" ||
@@ -305,22 +292,12 @@ namespace NBXplorer.Controllers
 				}
 
 				forward |= listenAllTrackedSource == "*" || listenAllTrackedSource == o.CryptoCode ||
-							listenedTrackedSource.ContainsKey((network.Network.NBitcoinNetwork, o.TrackedTransaction.TrackedSource));
+							listenedTrackedSource.ContainsKey((network.Network.NBitcoinNetwork, o.TrackedSource));
 
 				if (forward)
 				{
-					var chain = ChainProvider.GetChain(o.CryptoCode);
-					if (chain == null)
-						return;
-					var blockHeader = o.BlockId == null ? null : chain.GetBlock(o.BlockId);
-
-					var derivation = (o.TrackedTransaction.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
-					await server.Send(new Models.NewTransactionEvent()
-					{
-						CryptoCode = o.CryptoCode,
-						BlockId = blockHeader?.Hash,
-						TransactionData = Utils.ToTransactionResult(includeTransaction, chain, new[] { o.SavedTransaction }),
-					}.SetMatch(o.TrackedTransaction));
+					var derivation = (o.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
+					await server.Send(o);
 				}
 			}));
 			try
@@ -386,6 +363,43 @@ namespace NBXplorer.Controllers
 			return new EmptyResult();
 		}
 
+
+		[Route("cryptos/{cryptoCode}/events")]
+		public async Task<JArray> GetEvents(string cryptoCode, int lastEventId = 0, int? limit = null, bool longPolling = false, CancellationToken cancellationToken = default)
+		{
+			if (limit != null && limit.Value < 0)
+				throw new NBXplorerError(400, "invalid-limit", "limit should be more than 0").AsException();
+			var network = GetNetwork(cryptoCode, false);
+			TaskCompletionSource<bool> waitNextEvent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+			Action<NewEventBase> maySetNextEvent = (NewEventBase ev) =>
+			{
+				if (ev.CryptoCode == network.CryptoCode)
+					waitNextEvent.TrySetResult(true);
+			};
+			using (CompositeDisposable subscriptions = new CompositeDisposable())
+			{
+				subscriptions.Add(_EventAggregator.Subscribe<NewBlockEvent>(maySetNextEvent));
+				subscriptions.Add(_EventAggregator.Subscribe<NewTransactionEvent>(maySetNextEvent));
+			retry:
+				var repo = RepositoryProvider.GetRepository(network);
+				var result = await repo.GetEvents(lastEventId, limit);
+				if (result.Count == 0 && longPolling)
+				{
+					try
+					{
+						await waitNextEvent.Task.WithCancellation(cancellationToken);
+						goto retry;
+					}
+					catch when (cancellationToken.IsCancellationRequested)
+					{
+
+					}
+				}
+				return new JArray(result.Select(o => o.ToJObject(repo.Serializer.Settings)));
+			}
+		}
+
+
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/transactions/{txId}")]
 		public async Task<IActionResult> GetTransaction(
@@ -399,7 +413,10 @@ namespace NBXplorer.Controllers
 			var result = await RepositoryProvider.GetRepository(network).GetSavedTransactions(txId);
 			if (result.Length == 0)
 				return NotFound();
-			return Json(Utils.ToTransactionResult(includeTransaction, chain, result));
+			var tx = Utils.ToTransactionResult(chain, result);
+			if (!includeTransaction)
+				tx.Transaction = null;
+			return Json(tx);
 		}
 
 		[HttpPost]
@@ -444,108 +461,88 @@ namespace NBXplorer.Controllers
 			return trackedSource;
 		}
 
-		static TimeSpan LongPollTimeout = TimeSpan.FromSeconds(10);
 		[HttpGet]
-		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/transactions")]
-		[Route("cryptos/{cryptoCode}/addresses/{address}/transactions")]
-		public async Task<GetTransactionsResponse> GetTransactions(
+		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/transactions/{txId?}")]
+		[Route("cryptos/{cryptoCode}/addresses/{address}/transactions/{txId?}")]
+		public async Task<IActionResult> GetTransactions(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
 			[ModelBinder(BinderType = typeof(BitcoinAddressModelBinder))]
 			BitcoinAddress address,
-			[ModelBinder(BinderType = typeof(BookmarksModelBinding))]
-			HashSet<Bookmark> unconfirmedBookmarks = null,
-			[ModelBinder(BinderType = typeof(BookmarksModelBinding))]
-			HashSet<Bookmark> confirmedBookmarks = null,
-			[ModelBinder(BinderType = typeof(BookmarksModelBinding))]
-			HashSet<Bookmark> replacedBookmarks = null,
-			bool includeTransaction = true,
-			bool longPolling = false)
+			[ModelBinder(BinderType = typeof(UInt256ModelBinding))]
+			uint256 txId = null,
+			bool includeTransaction = true)
 		{
 			var trackedSource = GetTrackedSource(derivationScheme, address);
 			if (trackedSource == null)
 				throw new ArgumentNullException(nameof(trackedSource));
-			GetTransactionsResponse response = null;
-			using (CancellationTokenSource cts = new CancellationTokenSource())
-			{
-				if (longPolling)
-					cts.CancelAfter(LongPollTimeout);
-				var network = GetNetwork(cryptoCode, false);
-				var chain = ChainProvider.GetChain(network);
-				var repo = RepositoryProvider.GetRepository(network);
+			TransactionInformation fetchedTransactionInfo = null;
 
-				while (true)
-				{
-					response = new GetTransactionsResponse();
-					int currentHeight = chain.Height;
-					response.Height = currentHeight;
-					var txs = await GetAnnotatedTransactions(repo, chain, trackedSource);
-					foreach (var item in new[]
-					{
+			var network = GetNetwork(cryptoCode, false);
+			var chain = ChainProvider.GetChain(network);
+			var repo = RepositoryProvider.GetRepository(network);
+
+			var response = new GetTransactionsResponse();
+			int currentHeight = chain.Height;
+			response.Height = currentHeight;
+			var txs = await GetAnnotatedTransactions(repo, chain, trackedSource, txId);
+			foreach (var item in new[]
+			{
 					new
 					{
 						TxSet = response.ConfirmedTransactions,
-						KnownBookmarks = confirmedBookmarks  ?? new HashSet<Bookmark>(),
 						AnnotatedTx = txs.ConfirmedTransactions
 					},
 					new
 					{
 						TxSet = response.UnconfirmedTransactions,
-						KnownBookmarks = unconfirmedBookmarks  ?? new HashSet<Bookmark>(),
 						AnnotatedTx = txs.UnconfirmedTransactions
 					},
 					new
 					{
 						TxSet = response.ReplacedTransactions,
-						KnownBookmarks = replacedBookmarks  ?? new HashSet<Bookmark>(),
 						AnnotatedTx = txs.ReplacedTransactions
 					},
 				})
+			{
+				foreach (var tx in item.AnnotatedTx)
+				{
+					var txInfo = new TransactionInformation()
 					{
-						item.TxSet.Bookmark = Bookmark.Start;
-						item.TxSet.KnownBookmark = item.KnownBookmarks.Contains(Bookmark.Start) ? Bookmark.Start : null;
+						BlockHash = tx.Height.HasValue ? tx.Record.BlockHash : null,
+						Height = tx.Height,
+						TransactionId = tx.Record.TransactionHash,
+						Transaction = includeTransaction ? tx.Record.Transaction : null,
+						Confirmations = tx.Height.HasValue ? currentHeight - tx.Height.Value + 1 : 0,
+						Timestamp = txs.GetByTxId(tx.Record.TransactionHash).Select(t => t.Record.FirstSeen).First(),
+						Inputs = tx.Record.SpentOutpoints.Select(o => txs.GetUTXO(o)).Where(o => o != null).ToList(),
+						Outputs = tx.Record.GetReceivedOutputs().ToList()
+					};
 
-						BookmarkProcessor processor = new BookmarkProcessor(32 + 32 + 25);
-						foreach (var tx in item.AnnotatedTx)
-						{
-							processor.PushNew();
-							processor.AddData(tx.Record.TransactionHash);
-							processor.AddData(tx.Record.BlockHash ?? uint256.Zero);
-							processor.UpdateBookmark();
+					if (txId == null || txId == txInfo.TransactionId)
+						item.TxSet.Transactions.Add(txInfo);
+					if (txId != null && txId == txInfo.TransactionId)
+						fetchedTransactionInfo = txInfo;
 
-							var txInfo = new TransactionInformation()
-							{
-								BlockHash = tx.Height.HasValue ? tx.Record.BlockHash : null,
-								Height = tx.Height,
-								TransactionId = tx.Record.TransactionHash,
-								Transaction = includeTransaction ? tx.Record.Transaction : null,
-								Confirmations = tx.Height.HasValue ? currentHeight - tx.Height.Value + 1 : 0,
-								Timestamp = txs.GetByTxId(tx.Record.TransactionHash).Select(t => t.Record.FirstSeen).First(),
-								Inputs = tx.Record.SpentOutpoints.Select(o => txs.GetUTXO(o)).Where(o => o != null).ToList(),
-								Outputs = tx.Record.GetReceivedOutputs(trackedSource).ToList()
-							};
-
-							item.TxSet.Transactions.Add(txInfo);
-
-							txInfo.BalanceChange = txInfo.Outputs.Select(o => o.Value).Sum() - txInfo.Inputs.Select(o => o.Value).Sum();
-
-							item.TxSet.Bookmark = processor.CurrentBookmark;
-							if (item.KnownBookmarks.Contains(processor.CurrentBookmark))
-							{
-								item.TxSet.KnownBookmark = processor.CurrentBookmark;
-								item.TxSet.Transactions.Clear();
-							}
-						}
-					}
-
-					if (!longPolling || response.HasChanges())
-						break;
-					if (!await WaitingTransaction(trackedSource, cts.Token))
-						break;
+					txInfo.BalanceChange = txInfo.Outputs.Select(o => o.Value).Sum() - txInfo.Inputs.Select(o => o.Value).Sum();
 				}
 			}
-			return response;
+
+
+
+			if (txId == null)
+			{
+				return Json(response);
+			}
+			else if (fetchedTransactionInfo == null)
+			{
+				return NotFound();
+			}
+			else
+			{
+				return Json(fetchedTransactionInfo);
+			}
 		}
 
 		[HttpPost]
@@ -676,64 +673,45 @@ namespace NBXplorer.Controllers
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
 			[ModelBinder(BinderType = typeof(BitcoinAddressModelBinder))]
-			BitcoinAddress address,
-			[ModelBinder(BinderType = typeof(BookmarksModelBinding))]
-			HashSet<Bookmark> confirmedBookmarks = null,
-			[ModelBinder(BinderType = typeof(BookmarksModelBinding))]
-			HashSet<Bookmark> unconfirmedBookmarks = null,
-			bool longPolling = false)
+			BitcoinAddress address)
 		{
 			var trackedSource = GetTrackedSource(derivationScheme, address);
-			unconfirmedBookmarks = unconfirmedBookmarks ?? new HashSet<Bookmark>();
-			confirmedBookmarks = confirmedBookmarks ?? new HashSet<Bookmark>();
 			UTXOChanges changes = null;
 			if (trackedSource == null)
 				throw new ArgumentNullException(nameof(trackedSource));
 
-			using (CancellationTokenSource cts = new CancellationTokenSource())
+
+			var network = GetNetwork(cryptoCode, false);
+			var chain = ChainProvider.GetChain(network);
+			var repo = RepositoryProvider.GetRepository(network);
+
+			changes = new UTXOChanges();
+			changes.CurrentHeight = chain.Height;
+			Stopwatch stopwatch = new Stopwatch();
+			stopwatch.Start();
+			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
+
+			var states = UTXOStateResult.CreateStates(transactions.UnconfirmedTransactions.Select(c => c.Record),
+													transactions.ConfirmedTransactions.Select(c => c.Record));
+
+			changes.Confirmed = SetUTXOChange(states.Confirmed);
+			changes.Unconfirmed = SetUTXOChange(states.Unconfirmed, states.Confirmed.Actual);
+
+
+
+			FillUTXOsInformation(changes.Confirmed.UTXOs, transactions, changes.CurrentHeight);
+			FillUTXOsInformation(changes.Unconfirmed.UTXOs, transactions, changes.CurrentHeight);
+
+			stopwatch.Stop();
+			if (ExplorerConfiguration.AutoPruningTime != null &&
+			   stopwatch.Elapsed > ExplorerConfiguration.AutoPruningTime.Value)
 			{
-				if (longPolling)
-					cts.CancelAfter(LongPollTimeout);
-				var network = GetNetwork(cryptoCode, false);
-				var chain = ChainProvider.GetChain(network);
-				var repo = RepositoryProvider.GetRepository(network);
-
-				while (true)
-				{
-					changes = new UTXOChanges();
-					changes.CurrentHeight = chain.Height;
-					Stopwatch stopwatch = new Stopwatch();
-					stopwatch.Start();
-					var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
-
-					var states = UTXOStateResult.CreateStates(unconfirmedBookmarks,
-															transactions.UnconfirmedTransactions.Select(c => c.Record),
-															confirmedBookmarks,
-															transactions.ConfirmedTransactions.Select(c => c.Record));
-
-					changes.Confirmed = SetUTXOChange(states.Confirmed);
-					changes.Unconfirmed = SetUTXOChange(states.Unconfirmed, states.Confirmed.Actual);
-
-
-
-					FillUTXOsInformation(changes.Confirmed.UTXOs, transactions, changes.CurrentHeight);
-					FillUTXOsInformation(changes.Unconfirmed.UTXOs, transactions, changes.CurrentHeight);
-
-					stopwatch.Stop();
-					if (ExplorerConfiguration.AutoPruningTime != null &&
-					   stopwatch.Elapsed > ExplorerConfiguration.AutoPruningTime.Value)
-					{
-						await AttemptPrune(repo, transactions, states);
-					}
-
-					if (!longPolling || changes.HasChanges)
-						break;
-					if (!await WaitingTransaction(trackedSource, cts.Token))
-						break;
-				}
-				changes.TrackedSource = trackedSource;
-				changes.DerivationStrategy = (trackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
+				await AttemptPrune(repo, transactions, states);
 			}
+
+			changes.TrackedSource = trackedSource;
+			changes.DerivationStrategy = (trackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
+
 			return changes;
 		}
 
@@ -840,9 +818,6 @@ namespace NBXplorer.Controllers
 			var substractedReceived = new HashSet<OutPoint>(substract.UTXOByOutpoint.Select(u => u.Key));
 
 			UTXOChange change = new UTXOChange();
-			change.KnownBookmark = states.Known == null ? null : states.Known.CurrentBookmark;
-			change.Bookmark = states.Actual.CurrentBookmark;
-
 			states.Known = states.Known ?? new UTXOState();
 
 			foreach (var coin in states.Actual.UTXOByOutpoint)
@@ -862,12 +837,24 @@ namespace NBXplorer.Controllers
 			return change;
 		}
 
-		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(Repository repo, SlimChain chain, TrackedSource trackedSource)
+		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(Repository repo, SlimChain chain, TrackedSource trackedSource, uint256 txId = null)
 		{
-			var annotatedTransactions = new AnnotatedTransactionCollection((await repo
-				.GetTransactions(trackedSource))
-				.Select(t => new AnnotatedTransaction(t, chain))
+			var transactions = await repo.GetTransactions(trackedSource, txId);
+
+			// If the called is interested by only a single txId, we need to fetch the parents as well
+			if (txId != null)
+			{
+				var spentOutpoints = transactions.SelectMany(t => t.SpentOutpoints.Select(o => o.Hash)).ToHashSet();
+				var gettingParents = spentOutpoints.Select(async h => await repo.GetTransactions(trackedSource, h)).ToList();
+				await Task.WhenAll(gettingParents);
+				transactions = gettingParents.SelectMany(p => p.GetAwaiter().GetResult()).Concat(transactions).ToArray();
+			}
+
+			var annotatedTransactions = new AnnotatedTransactionCollection(
+				transactions.Select(t => new AnnotatedTransaction(t, chain))
 				.ToList(), trackedSource);
+
+
 			var cleaned = annotatedTransactions.DuplicatedTransactions.Where(c => (DateTimeOffset.UtcNow - c.Record.Inserted) > TimeSpan.FromDays(1.0)).Select(c => c.Record).ToArray();
 			if (cleaned.Length != 0)
 			{
@@ -881,19 +868,6 @@ namespace NBXplorer.Controllers
 #pragma warning restore CS4014 // Because this call is not awaited, execution of the current method continues before the call is completed
 			}
 			return annotatedTransactions;
-		}
-
-		private async Task<bool> WaitingTransaction(TrackedSource trackedSource, CancellationToken cancellationToken)
-		{
-			try
-			{
-				await _EventAggregator.WaitNext<NewTransactionMatchEvent>(e => e.TrackedTransaction.TrackedSource.Equals(trackedSource), cancellationToken);
-				return true;
-			}
-			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-			{
-				return false;
-			}
 		}
 
 		[HttpPost]

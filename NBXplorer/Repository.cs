@@ -23,6 +23,7 @@ using NBXplorer.Logging;
 using NBXplorer.Configuration;
 using static NBXplorer.RepositoryProvider;
 using static NBXplorer.Repository;
+using Newtonsoft.Json.Linq;
 
 namespace NBXplorer
 {
@@ -379,9 +380,30 @@ namespace NBXplorer
 				tx.Insert(TableName, $"{PrimaryKey}-{key}", value);
 			}
 
-			public (string Key, byte[] Value)[] SelectForwardSkip(int n)
+			public (string Key, byte[] Value)[] SelectForwardSkip(int n, string startWith = null)
 			{
-				return tx.SelectForwardStartsWith<string, byte[]>(TableName, PrimaryKey).Skip(n).Select(c => (c.Key, c.Value)).ToArray();
+				if (startWith == null)
+					startWith = PrimaryKey;
+				else
+					startWith = $"{PrimaryKey}-{startWith}";
+				return tx.SelectForwardStartsWith<string, byte[]>(TableName, startWith).Skip(n).Select(c => (c.Key, c.Value)).ToArray();
+			}
+
+			public (long Key, byte[] Value)[] SelectFrom(long key, int? limit)
+			{
+				return tx.SelectForwardStartFrom<string, byte[]>(TableName, $"{PrimaryKey}-{key:D20}", false)
+						.Take(limit == null ? Int32.MaxValue : limit.Value)
+						.Where(r => r.Exists && r.Value != null)
+						.Select(r => (ExtractLong(r.Key), r.Value))
+						.ToArray();
+			}
+
+			private long ExtractLong(string key)
+			{
+				var span = key.AsSpan();
+				var sep = span.LastIndexOf('-');
+				span = span.Slice(sep + 1);
+				return long.Parse(span);
 			}
 
 			public int Count()
@@ -392,6 +414,10 @@ namespace NBXplorer
 			public void Insert(int key, byte[] value)
 			{
 				Insert($"{key:D10}", value);
+			}
+			public void Insert(long key, byte[] value)
+			{
+				Insert($"{key:D20}", value);
 			}
 			public void RemoveKey(int index)
 			{
@@ -405,9 +431,22 @@ namespace NBXplorer
 				bytes[0] = (byte)(bytes[0] & ~0x80);
 				return (int)NBitcoin.Utils.ToUInt32(bytes, false);
 			}
+			public long? SelectLong(int index)
+			{
+				var bytes = SelectBytes(index);
+				if (bytes == null)
+					return null;
+				bytes[0] = (byte)(bytes[0] & ~0x80);
+				return (int)NBitcoin.Utils.ToUInt64(bytes, false);
+			}
 			public void Insert(int key, int value)
 			{
 				var bytes = NBitcoin.Utils.ToBytes((uint)value, false);
+				Insert(key, bytes);
+			}
+			public void Insert(int key, long value)
+			{
+				var bytes = NBitcoin.Utils.ToBytes((ulong)value, false);
 				Insert(key, bytes);
 			}
 		}
@@ -435,6 +474,11 @@ namespace NBXplorer
 		Index GetTransactionsIndex(DBreeze.Transactions.Transaction tx, TrackedSource trackedSource)
 		{
 			return new Index(tx, $"{_Suffix}Transactions", $"{trackedSource.GetHash()}");
+		}
+
+		Index GetEventsIndex(DBreeze.Transactions.Transaction tx)
+		{
+			return new Index(tx, $"{_Suffix}Events", string.Empty);
 		}
 
 		NBXplorerNetwork _Network;
@@ -542,6 +586,48 @@ namespace NBXplorer
 			}
 			highestTable.Insert(0, highestGenerated + toGenerate);
 			tx.Commit();
+		}
+
+		public Task<long> SaveEvent(NewEventBase evt)
+		{
+			// Fetch the lastEventId on row 0
+			// Increment it,
+			// Insert event
+			return _Engine.DoAsync((tx) =>
+			{
+				var idx = GetEventsIndex(tx);
+				var lastEventIndexMaybe = idx.SelectLong(0);
+				var lastEventIndex = lastEventIndexMaybe.HasValue ? lastEventIndexMaybe.Value + 1 : 1;
+				idx.Insert(0, lastEventIndex);
+				idx.Insert(lastEventIndex, this.ToBytes(evt.ToJObject(Serializer.Settings)));
+				tx.Commit();
+				lastKnownEventIndex = lastEventIndex;
+				return lastEventIndex;
+			});
+		}
+		long lastKnownEventIndex = -1;
+		public Task<IList<NewEventBase>> GetEvents(long lastEventId, int? limit = null)
+		{
+			if (lastEventId < 1 && limit.HasValue && limit.Value != int.MaxValue)
+				limit = limit.Value + 1; // The row with key 0 holds the lastEventId
+			return _Engine.DoAsync((tx) =>
+			{
+				if (lastKnownEventIndex != -1 && lastKnownEventIndex == lastEventId)
+					return new List<NewEventBase>();
+				tx.ValuesLazyLoadingIsOn = false;
+				var idx = GetEventsIndex(tx);
+				var query = idx.SelectFrom(lastEventId, limit);
+				IList<NewEventBase> evts = new List<NewEventBase>(query.Length);
+				foreach (var value in query)
+				{
+					if (value.Key == 0) // Last Index
+						continue;
+					var evt = NewEventBase.ParseEvent(ToObject<JObject>(value.Value), Serializer.Settings);
+					evt.EventId = value.Key;
+					evts.Add(evt);
+				}
+				return evts;
+			});
 		}
 
 		public Task SaveKeyInformations(KeyPathInformation[] keyPathInformations)
@@ -710,7 +796,6 @@ namespace NBXplorer
 			t.Transaction.PrecomputeHash(true, false);
 			return t;
 		}
-
 		public async Task<MultiValueDictionary<Script, KeyPathInformation>> GetKeyInformations(Script[] scripts)
 		{
 			MultiValueDictionary<Script, KeyPathInformation> result = new MultiValueDictionary<Script, KeyPathInformation>();
@@ -792,7 +877,7 @@ namespace NBXplorer
 			get; set;
 		} = 30;
 
-		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource)
+		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null)
 		{
 
 			bool needUpdate = false;
@@ -803,7 +888,7 @@ namespace NBXplorer
 				var table = GetTransactionsIndex(tx, trackedSource);
 				tx.ValuesLazyLoadingIsOn = false;
 				var result = new List<TransactionMatchData>();
-				foreach (var row in table.SelectForwardSkip(0))
+				foreach (var row in table.SelectForwardSkip(0, txId?.ToString()))
 				{
 					MemoryStream ms = new MemoryStream(row.Value);
 					BitcoinStream bs = new BitcoinStream(ms, false);
@@ -1332,8 +1417,14 @@ namespace NBXplorer
 			return needRefill;
 		}
 
+		ConcurrentDictionary<uint256, uint256> noMatchCache = new ConcurrentDictionary<uint256, uint256>();
 		public async Task<TrackedTransaction[]> GetMatches(Transaction tx, uint256 blockId, DateTimeOffset now)
 		{
+			var h = tx.GetHash();
+			if (blockId != null && noMatchCache.TryRemove(h, out var unused))
+			{
+				return Array.Empty<TrackedTransaction>();
+			}
 			var matches = new Dictionary<string, TrackedTransaction>();
 			HashSet<Script> inputScripts = new HashSet<Script>();
 			HashSet<Script> outputScripts = new HashSet<Script>();
@@ -1363,7 +1454,7 @@ namespace NBXplorer
 					if (!matches.TryGetValue(matchesGroupingKey, out TrackedTransaction match))
 					{
 						match = new TrackedTransaction(
-							new TrackedTransactionKey(tx.GetHash(), blockId, false),
+							new TrackedTransactionKey(h, blockId, false),
 							keyInfo.TrackedSource,
 							tx,
 							new Dictionary<Script, KeyPath>())
@@ -1380,6 +1471,19 @@ namespace NBXplorer
 			foreach (var m in matches.Values)
 			{
 				m.KnownKeyPathMappingUpdated();
+			}
+			if (blockId == null && 
+				matches.Count == 0 && 
+				noMatchCache.TryAdd(h, h) &&
+				h.GetLow32() % 1000 == 0) // Calling .Count is expensive, so we do this once in a while
+			{
+				var count = noMatchCache.Count;
+				if (count > 5000) // Let's keep cache small, no more than 5000 items
+				{
+					foreach (var kv in noMatchCache.Take(count - 5000).ToList())
+						noMatchCache.TryRemove(kv.Key, out var v);
+				}
+				return Array.Empty<TrackedTransaction>();
 			}
 			return matches.Values.ToArray();
 		}
