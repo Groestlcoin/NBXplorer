@@ -1902,6 +1902,41 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
+		public void CanRescanFullyIndexedTransaction()
+		{
+			using (var tester = ServerTester.Create())
+			{
+				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
+				var pubkey = tester.CreateDerivationStrategy(key.Neuter());
+				tester.Client.Track(pubkey);
+				
+				// In this test, we index a transaction, but miss an address (0/0 is found, but not 0/50 because it is outside the gap limit)
+				tester.RPC.SendCommand(RPCOperations.sendmany, "",
+						JObject.Parse($"{{ \"{tester.AddressOf(pubkey, "0/0")}\": \"0.9\", \"{tester.AddressOf(pubkey, "0/50")}\": \"0.5\" }}"));
+				tester.RPC.EnsureGenerate(1);
+				tester.Notifications.WaitForBlocks(tester.RPC.Generate(1));
+
+				var transaction = tester.Client.GetTransactions(pubkey).ConfirmedTransactions.Transactions.Single();
+				Assert.Single(transaction.Outputs);
+
+				tester.Client.ScanUTXOSet(pubkey, 1000, 100);
+				var info = WaitScanFinish(tester.Client, pubkey);
+				Assert.Equal(2, info.Progress.Found);
+
+				// Rescanning should find 0/50
+				transaction = tester.Client.GetTransactions(pubkey).ConfirmedTransactions.Transactions.Single();
+				Assert.Equal(2, transaction.Outputs.Count());
+
+				tester.RPC.EnsureGenerate(1);
+				tester.Notifications.WaitForBlocks(tester.RPC.Generate(1));
+
+				// Check again
+				transaction = tester.Client.GetTransactions(pubkey).ConfirmedTransactions.Transactions.Single();
+				Assert.Equal(2, transaction.Outputs.Count());
+			}
+		}
+
+		[Fact]
 		public void CanScanUTXOSet()
 		{
 			using (var tester = ServerTester.Create())
@@ -1966,6 +2001,47 @@ namespace NBXplorer.Tests
 				utxo = tester.Client.GetUTXOs(pubkey);
 				Assert.Equal(2, utxo.Confirmed.UTXOs.Count);
 				Assert.NotEqual(NBitcoin.Utils.UnixTimeToDateTime(0), utxo.Confirmed.UTXOs[0].Timestamp);
+
+				Logs.Tester.LogInformation($"Let's try to spend to ourselves");
+				var changeAddress = tester.Client.GetUnused(pubkey, DerivationFeature.Change);
+				var us = tester.Client.GetUnused(pubkey, DerivationFeature.Deposit);
+				Assert.Equal(new KeyPath("0/52"), us.KeyPath);
+				Assert.Equal(new KeyPath("1/0"), changeAddress.KeyPath);
+				TransactionBuilder builder = tester.Network.CreateTransactionBuilder();
+				builder.AddCoins(utxo.GetUnspentCoins());
+				builder.AddKeys(utxo.GetKeys(key));
+				builder.Send(us.ScriptPubKey, Money.Coins(1.1m));
+				builder.SetChange(changeAddress.ScriptPubKey);
+				var fallbackFeeRate = new FeeRate(Money.Satoshis(100), 1);
+				var feeRate = tester.Client.GetFeeRate(1, fallbackFeeRate).FeeRate;
+				builder.SendEstimatedFees(feeRate);
+				var tx = builder.BuildTransaction(true);
+				Assert.Equal(2, tx.Outputs.Count);
+				Assert.True(tester.Client.Broadcast(tx).Success);
+				tester.RPC.EnsureGenerate(1);
+				AssertNotPruned(tester, pubkey, tx.GetHash());
+				tester.Client.ScanUTXOSet(pubkey, batchsize, gaplimit);
+				info = WaitScanFinish(tester.Client, pubkey);
+				Assert.Equal(2, info.Progress.Found);
+				utxo = tester.Client.GetUTXOs(pubkey);
+				Assert.Equal(2, utxo.GetUnspentUTXOs().Count());
+				Assert.Contains(us.KeyPath, utxo.GetUnspentUTXOs().Select(u => u.KeyPath));
+				Assert.Contains(changeAddress.KeyPath, utxo.GetUnspentUTXOs().Select(u => u.KeyPath));
+
+				Logs.Tester.LogInformation($"Let's try to dump our server and rescan");
+				tester.ResetExplorer();
+				tester.Client.Track(pubkey);
+				utxo = tester.Client.GetUTXOs(pubkey);
+				Assert.Empty(utxo.GetUnspentUTXOs());
+				tester.Client.ScanUTXOSet(pubkey, batchsize, gaplimit);
+				info = WaitScanFinish(tester.Client, pubkey);
+				Assert.Equal(2, info.Progress.Found);
+				utxo = tester.Client.GetUTXOs(pubkey);
+				Assert.Equal(2, utxo.GetUnspentUTXOs().Count());
+				Assert.Contains(us.KeyPath, utxo.GetUnspentUTXOs().Select(u => u.KeyPath));
+				Assert.Contains(changeAddress.KeyPath, utxo.GetUnspentUTXOs().Select(u => u.KeyPath));
+				// But we lost the historic of the past transactions
+				Assert.Single(tester.Client.GetTransactions(pubkey).ConfirmedTransactions.Transactions);
 			}
 		}
 

@@ -109,7 +109,7 @@ namespace NBXplorer
 				return;
 			if (Chain.Height < node.PeerVersion.StartHeight)
 				return;
-			var currentLocation = CurrentLocation;
+			var currentLocation = (_HighestInFlight ?? CurrentLocation);
 			if (currentLocation == null)
 				return;
 			var currentBlock = Chain.FindFork(currentLocation);
@@ -238,26 +238,41 @@ namespace NBXplorer
 				tx.PrecomputeHash(false, true);
 
 			var blockHash = block.GetHash();
-			DateTimeOffset now = DateTimeOffset.UtcNow;
-			var matches =
-				block.Transactions
-				.Select(tx => Repository.GetMatches(tx, blockHash, now))
-				.ToArray();
-			await Task.WhenAll(matches);
-			await SaveMatches(matches.SelectMany((Task<TrackedTransaction[]> m) => m.GetAwaiter().GetResult()).ToArray(), blockHash, now);
-			var slimBlockHeader = Chain.GetBlock(blockHash);
-			if (slimBlockHeader != null)
+			var delay = TimeSpan.FromSeconds(1);
+		retry:
+			try
 			{
-				var blockEvent = new Models.NewBlockEvent()
+				DateTimeOffset now = DateTimeOffset.UtcNow;
+				var matches =
+					block.Transactions
+					.Select(tx => Repository.GetMatches(tx, blockHash, now, true))
+					.ToArray();
+				await Task.WhenAll(matches);
+				await SaveMatches(matches.SelectMany((Task<TrackedTransaction[]> m) => m.GetAwaiter().GetResult()).ToArray(), blockHash, now);
+				var slimBlockHeader = Chain.GetBlock(blockHash);
+				if (slimBlockHeader != null)
 				{
-					CryptoCode = _Repository.Network.CryptoCode,
-					Hash = blockHash,
-					Height = slimBlockHeader.Height,
-					PreviousBlockHash = slimBlockHeader.Previous
-				};
-				var saving = Repository.SaveEvent(blockEvent);
-				_EventAggregator.Publish(blockEvent);
-				await saving;
+					var blockEvent = new Models.NewBlockEvent()
+					{
+						CryptoCode = _Repository.Network.CryptoCode,
+						Hash = blockHash,
+						Height = slimBlockHeader.Height,
+						PreviousBlockHash = slimBlockHeader.Previous
+					};
+					var saving = Repository.SaveEvent(blockEvent);
+					_EventAggregator.Publish(blockEvent);
+					await saving;
+				}
+			}
+			catch (Exception ex)
+			{
+				Logs.Explorer.LogWarning(ex, $"{Network.CryptoCode}: Error while saving block in database, retrying in {delay.TotalSeconds} seconds");
+				await Task.Delay(delay);
+				delay = delay * 2;
+				var maxDelay = TimeSpan.FromSeconds(60);
+				if (delay > maxDelay)
+					delay = maxDelay;
+				goto retry;
 			}
 
 			if (_InFlights.TryRemove(blockHash, out var unused) && _InFlights.IsEmpty)
@@ -277,7 +292,7 @@ namespace NBXplorer
 		private async Task SaveMatches(Transaction transaction)
 		{
 			var now = DateTimeOffset.UtcNow;
-			var matches = (await Repository.GetMatches(transaction, null, now)).ToArray();
+			var matches = (await Repository.GetMatches(transaction, null, now, false)).ToArray();
 			await SaveMatches(matches, null, now);
 		}
 
