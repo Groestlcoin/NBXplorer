@@ -29,6 +29,7 @@ using NBXplorer.Authentication;
 using NBitcoin.DataEncoders;
 using System.Text.RegularExpressions;
 using NBXplorer.MessageBrokers;
+using NBitcoin.Protocol;
 
 namespace NBXplorer
 {
