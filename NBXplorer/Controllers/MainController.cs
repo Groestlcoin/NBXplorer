@@ -30,7 +30,7 @@ namespace NBXplorer.Controllers
 {
 	[Route("v1")]
 	[Authorize]
-	public class MainController : Controller
+	public partial class MainController : Controller
 	{
 		JsonSerializerSettings _SerializerSettings;
 		public MainController(
@@ -180,18 +180,13 @@ namespace NBXplorer.Controllers
 			
 			var location = waiter.GetLocation();
 			GetBlockchainInfoResponse blockchainInfo = null;
-			GetNetworkInfoResponse networkInfo = null;
 			if (waiter.RPCAvailable)
 			{
 				try
 				{
-					var batch = waiter.RPC.PrepareBatch();
-					batch.RequestTimeout = TimeSpan.FromMinutes(1.0);
-					var blockchainInfoAsync = batch.GetBlockchainInfoAsyncEx();
-					var networkInfoAsync = batch.GetNetworkInfoAsync();
-					await batch.SendBatchAsync();
-					blockchainInfo = await blockchainInfoAsync;
-					networkInfo = await networkInfoAsync;
+					var rpc = waiter.RPC.Clone();
+					rpc.RequestTimeout = TimeSpan.FromMinutes(1.0);
+					blockchainInfo = await rpc.GetBlockchainInfoAsyncEx();
 				}
 				catch(OperationCanceledException) // Timeout, can happen if core is really busy
 				{
@@ -210,14 +205,15 @@ namespace NBXplorer.Controllers
 
 			if (blockchainInfo != null)
 			{
+				GetNetworkInfoResponse networkInfo = waiter.NetworkInfo;
 				status.BitcoinStatus = new BitcoinStatus()
 				{
 					IsSynched = !waiter.IsSynchingCore(blockchainInfo),
 					Blocks = (int)blockchainInfo.Blocks,
 					Headers = (int)blockchainInfo.Headers,
 					VerificationProgress = blockchainInfo.VerificationProgress,
-					MinRelayTxFee = new FeeRate(Money.Coins((decimal)networkInfo.relayfee), 1000),
-					IncrementalRelayFee = new FeeRate(Money.Coins((decimal)networkInfo.incrementalfee), 1000),
+					MinRelayTxFee = networkInfo.GetRelayFee(),
+					IncrementalRelayFee = networkInfo.GetIncrementalFee(),
 					Capabilities = new NodeCapabilities()
 					{
 						CanScanTxoutSet = waiter.RPC.Capabilities.SupportScanUTXOSet,

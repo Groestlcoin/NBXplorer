@@ -364,6 +364,8 @@ namespace NBXplorer
 
 			if (changed)
 			{
+				if (oldState == BitcoinDWaiterState.NotStarted)
+					NetworkInfo = await _RPCWithTimeout.GetNetworkInfoAsync();
 				_EventAggregator.Publish(new BitcoinDStateChangedEvent(_Network, oldState, State));
 				if (State == BitcoinDWaiterState.Ready)
 				{
@@ -549,7 +551,6 @@ namespace NBXplorer
 
 		private void Node_StateChanged(Node node, NodeState oldState)
 		{
-			Logs.Explorer.LogInformation("TICK");
 			_Tick.Set();
 		}
 
@@ -747,5 +748,6 @@ namespace NBXplorer
 			}
 		}
 
+		public GetNetworkInfoResponse NetworkInfo { get; internal set; }
 	}
 }
