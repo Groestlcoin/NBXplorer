@@ -42,19 +42,23 @@ namespace NBXplorer.Controllers
 			AddressPoolServiceAccessor addressPoolService,
 			ScanUTXOSetServiceAccessor scanUTXOSetService,
 			RebroadcasterHostedService rebroadcaster,
-			IOptions<MvcJsonOptions> jsonOptions)
+			KeyPathTemplates keyPathTemplates,
+			MvcNewtonsoftJsonOptions jsonOptions
+			)
 		{
 			ExplorerConfiguration = explorerConfiguration;
 			RepositoryProvider = repositoryProvider;
 			ChainProvider = chainProvider;
-			_SerializerSettings = jsonOptions.Value.SerializerSettings;
+			_SerializerSettings = jsonOptions.SerializerSettings;
 			_EventAggregator = eventAggregator;
 			ScanUTXOSetService = scanUTXOSetService.Instance;
 			Waiters = waiters;
 			Rebroadcaster = rebroadcaster;
+			this.keyPathTemplates = keyPathTemplates;
 			AddressPoolService = addressPoolService.Instance;
 		}
 		EventAggregator _EventAggregator;
+		private readonly KeyPathTemplates keyPathTemplates;
 
 		public BitcoinDWaiters Waiters
 		{
@@ -451,11 +455,11 @@ namespace NBXplorer.Controllers
 			var network = GetNetwork(cryptoCode, false);
 			if (trackedSource is DerivationSchemeTrackedSource dts)
 			{
-				foreach (var feature in Enum.GetValues(typeof(DerivationFeature)).Cast<DerivationFeature>())
+				foreach (var feature in keyPathTemplates.GetSupportedDerivationFeatures())
 				{
 					await RepositoryProvider.GetRepository(network).GenerateAddresses(dts.DerivationStrategy, feature, new GenerateAddressQuery(minAddresses: 3, null));
 				}
-				foreach (var feature in Enum.GetValues(typeof(DerivationFeature)).Cast<DerivationFeature>())
+				foreach (var feature in keyPathTemplates.GetSupportedDerivationFeatures())
 				{
 					_ = AddressPoolService.GenerateAddresses(network, dts.DerivationStrategy, feature);
 				}
@@ -764,7 +768,7 @@ namespace NBXplorer.Controllers
 			return change;
 		}
 
-		private async Task AttemptPrune(Repository repo, AnnotatedTransactionCollection transactions, UTXOState state)
+		private async Task<int> AttemptPrune(Repository repo, AnnotatedTransactionCollection transactions, UTXOState state)
 		{
 			var network = repo.Network;
 			var trackedSource = transactions.TrackedSource;
@@ -807,8 +811,10 @@ namespace NBXplorer.Controllers
 													.Select(id => transactions.GetByTxId(id).Record)
 													.ToList());
 					Logs.Explorer.LogInformation($"{network.CryptoCode}: Pruned {prunableIds.Count} transactions");
+					return prunableIds.Count;
 				}
 			}
+			return 0;
 		}
 
 		private bool OldEnough(AnnotatedTransactionCollection transactions, uint256 prunedBy, DateTimeOffset pruneBefore)
@@ -838,7 +844,7 @@ namespace NBXplorer.Controllers
 				var utxo = utxos[i];
 				utxo.KeyPath = transactions.GetKeyPath(utxo.ScriptPubKey);
 				if (utxo.KeyPath != null)
-					utxo.Feature = DerivationStrategyBase.GetFeature(utxo.KeyPath);
+					utxo.Feature = keyPathTemplates.GetDerivationFeature(utxo.KeyPath);
 				var txHeight = transactions.GetByTxId(utxo.Outpoint.Hash).Height is int h ? h : MaxHeight;
 				var isUnconf = txHeight == MaxHeight;
 				utxo.Confirmations = isUnconf ? 0 : currentHeight - txHeight + 1;
@@ -930,6 +936,22 @@ namespace NBXplorer.Controllers
 					RPCMessage = rpcEx.Message
 				};
 			}
+		}
+
+		[HttpPost]
+		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/prune")]
+		public async Task<PruneResponse> Prune(
+			string cryptoCode,
+			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
+			DerivationStrategyBase derivationScheme)
+		{
+			var trackedSource = new DerivationSchemeTrackedSource(derivationScheme);
+			var network = GetNetwork(cryptoCode, false);
+			var chain = ChainProvider.GetChain(network);
+			var repo = RepositoryProvider.GetRepository(network);
+			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
+			int pruned = await AttemptPrune(repo, transactions, transactions.ConfirmedState);
+			return new PruneResponse() { TotalPruned = pruned };
 		}
 	}
 }

@@ -739,6 +739,9 @@ namespace NBXplorer.Tests
 						}
 					}
 			});
+			var globalXPub = psbt2.PSBT.GlobalXPubs[userDerivationScheme.GetExtPubKeys().First().GetWif(tester.Network)];
+			Assert.Equal(new KeyPath("49'/0'"), globalXPub.KeyPath);
+
 			Assert.Equal(3, psbt2.PSBT.Outputs.Count);
 			Assert.Equal(2, psbt2.PSBT.Outputs.Where(o => o.HDKeyPaths.Any()).Count());
 			var selfchange = Assert.Single(psbt2.PSBT.Outputs.Where(o => o.HDKeyPaths.Any(h => h.Key.GetAddress(segwit ? ScriptPubKeyType.Segwit : ScriptPubKeyType.Legacy, tester.Network).ScriptPubKey == newAddress.ScriptPubKey)));
@@ -1102,8 +1105,10 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanPrune()
+		[Theory]
+		[InlineData(false)]
+		[InlineData(true)]
+		public void CanPrune(bool autoPruning)
 		{
 			// In this test we have fundingTxId with 2 output and spending1
 			// We make sure that only once the 2 outputs of fundingTxId have been consumed
@@ -1139,8 +1144,14 @@ namespace NBXplorer.Tests
 				tester.RPC.EnsureGenerate(1);
 				tester.WaitSynchronized();
 
-				tester.Configuration.AutoPruningTime = TimeSpan.Zero; // Activate pruning
-
+				if (autoPruning)
+				{
+					tester.Configuration.AutoPruningTime = TimeSpan.Zero; // Activate pruning
+				}
+				else
+				{
+					tester.Client.Prune(pubkey);
+				}
 
 				Logs.Tester.LogInformation("After activating pruning, it still should not pruned, because there is still one coin");
 				utxo = tester.Client.GetUTXOs(pubkey);
@@ -1165,6 +1176,10 @@ namespace NBXplorer.Tests
 				tester.RPC.EnsureGenerate(1);
 				tester.WaitSynchronized();
 
+				if (!autoPruning)
+				{
+					tester.Client.Prune(pubkey);
+				}
 				Logs.Tester.LogInformation($"Now {spending1} and {spending2} should be pruned");
 				utxo = tester.Client.GetUTXOs(pubkey);
 				AssertPruned(tester, pubkey, fundingTxId);
@@ -1877,8 +1892,8 @@ namespace NBXplorer.Tests
 
 		private static Derivation Generate(DerivationStrategyBase strategy)
 		{
-			var derivation = strategy.GetLineFor(DerivationFeature.Deposit).Derive(1);
-			var derivation2 = strategy.Derive(DerivationStrategyBase.GetKeyPath(DerivationFeature.Deposit).Derive(1));
+			var derivation = strategy.GetLineFor(KeyPathTemplates.Default.GetKeyPathTemplate(DerivationFeature.Deposit)).Derive(1U);
+			var derivation2 = strategy.Derive(KeyPathTemplates.Default.GetKeyPathTemplate(DerivationFeature.Deposit).GetKeyPath(1U));
 			Assert.Equal(derivation.Redeem, derivation2.Redeem);
 			return derivation;
 		}
@@ -2793,6 +2808,20 @@ namespace NBXplorer.Tests
 				Assert.Null(info.Progress.CompletedAt);
 				Thread.Sleep(100);
 			}
+		}
+
+		[Theory]
+		[InlineData("*","0", "1")]
+		[InlineData("*/", "0", "1")]
+		[InlineData("/*", "0", "1")]
+		[InlineData("1/*", "1/0", "1/1")]
+		[InlineData("1/*/2", "1/0/2", "1/1/2")]
+		[InlineData("*/2", "0/2", "1/2")]
+		[InlineData("m/*/2", "0/2", "1/2")]
+		public void CanParseKeyPathTemplates(string template, string path1, string path2)
+		{
+			Assert.Equal(path1, KeyPathTemplate.Parse(template).GetKeyPath(0).ToString());
+			Assert.Equal(path2, KeyPathTemplate.Parse(template).GetKeyPath(1).ToString());
 		}
 	}
 }
