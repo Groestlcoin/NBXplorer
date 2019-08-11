@@ -408,7 +408,9 @@ namespace NBXplorer
 			var highestTable = GetHighestPathIndex(tx, strategy, derivationFeature);
 			int highestGenerated = highestTable.SelectInt(0) ?? -1;
 			var feature = strategy.GetLineFor(keyPathTemplates.GetKeyPathTemplate(derivationFeature));
-			for (int i = 0; i < toGenerate; i++)
+
+			KeyPathInformation[] keyPathInformations = new KeyPathInformation[toGenerate];
+			Parallel.For(0, toGenerate, i =>
 			{
 				var index = highestGenerated + i + 1;
 				var derivation = feature.Derive((uint)index);
@@ -421,6 +423,12 @@ namespace NBXplorer
 					Feature = derivationFeature,
 					KeyPath = keyPathTemplates.GetKeyPathTemplate(derivationFeature).GetKeyPath(index, false)
 				};
+				keyPathInformations[i] = info;
+			});
+			for (int i = 0; i < toGenerate; i++)
+			{
+				var index = highestGenerated + i + 1;
+				var info = keyPathInformations[i];
 				var bytes = ToBytes(info);
 				GetScriptsIndex(tx, info.ScriptPubKey).Insert($"{strategy.GetHash()}-{derivationFeature}", bytes);
 				availableTable.Insert(index, bytes);
@@ -478,7 +486,7 @@ namespace NBXplorer
 				foreach (var info in keyPathInformations)
 				{
 					var bytes = ToBytes(info);
-					GetScriptsIndex(tx, info.ScriptPubKey).Insert($"{info.DerivationStrategy.GetHash()}-{info.DerivationStrategy}", bytes);
+					GetScriptsIndex(tx, info.ScriptPubKey).Insert($"{info.DerivationStrategy.GetHash()}-{info.Feature}", bytes);
 				}
 				tx.Commit();
 			});
@@ -1266,9 +1274,9 @@ namespace NBXplorer
 					if (kv.Value == null)
 						continue;
 					var index = GetAvailableKeysIndex(tx, trackedSource.DerivationStrategy, kv.Key);
-					bool needRefill = CleanUsed(kv, index);
+					bool needRefill = CleanUsed(kv.Value.Value, index);
 					index = GetReservedKeysIndex(tx, trackedSource.DerivationStrategy, kv.Key);
-					needRefill |= CleanUsed(kv, index);
+					needRefill |= CleanUsed(kv.Value.Value, index);
 					if (needRefill)
 					{
 						var hIndex = GetHighestPathIndex(tx, trackedSource.DerivationStrategy, kv.Key);
@@ -1283,13 +1291,13 @@ namespace NBXplorer
 			});
 		}
 
-		private bool CleanUsed(KeyValuePair<DerivationFeature, int?> kv, Index index)
+		private bool CleanUsed(int highestIndex, Index index)
 		{
 			bool needRefill = false;
 			foreach (var row in index.SelectForwardSkip(0))
 			{
 				var keyInfo = ToObject<KeyPathInformation>(row.Value);
-				if (keyInfo.GetIndex() <= kv.Value.Value)
+				if (keyInfo.GetIndex() <= highestIndex)
 				{
 					index.RemoveKey(keyInfo.GetIndex());
 					needRefill = true;
