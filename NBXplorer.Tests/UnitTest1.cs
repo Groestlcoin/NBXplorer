@@ -2056,7 +2056,7 @@ namespace NBXplorer.Tests
 						{
 							new RescanRequest.TransactionToRescan() { BlockId = blockId, TransactionId = txId1 },
 							new RescanRequest.TransactionToRescan() { BlockId = blockId2, TransactionId = txId2 }, // should fail because wrong block
-							new RescanRequest.TransactionToRescan() {  TransactionId = txId3 },  // should fail because no -txindex, but RPC remember wallet transactions :(
+							new RescanRequest.TransactionToRescan() {  TransactionId = txId3 },  // should work because -txindex
 							new RescanRequest.TransactionToRescan() { BlockId = blockId, Transaction = tx4 },  // should find it
 						}
 					});
@@ -2231,6 +2231,14 @@ namespace NBXplorer.Tests
 				Assert.Equal(new KeyPath("0/0"), utxo.Confirmed.UTXOs[0].KeyPath);
 				Assert.Equal(new KeyPath("0/2"), utxo.Confirmed.UTXOs[1].KeyPath);
 				Assert.Equal(new KeyPath("0/3"), utxo.Confirmed.UTXOs[2].KeyPath);
+
+				Logs.Tester.LogInformation("Making sure we can query a transaction our wallet does not know about if txindex=1");
+				txId = tester.SendToAddress(new Key().ScriptPubKey, Money.Coins(1.0m));
+				Assert.NotNull(tester.Client.GetTransaction(txId));
+				var blockId = tester.Explorer.Generate(1);
+				tester.Notifications.WaitForBlocks(blockId);
+				var savedTx = tester.Client.GetTransaction(txId);
+				Assert.Equal(blockId[0], savedTx.BlockId);
 			}
 		}
 		[Fact]
