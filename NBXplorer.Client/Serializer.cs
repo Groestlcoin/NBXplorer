@@ -10,18 +10,11 @@ namespace NBXplorer
 	public class Serializer
 	{
 
-		private readonly Network _Network;
-		public Network Network
-		{
-			get
-			{
-				return _Network;
-			}
-		}
+		private readonly NBXplorerNetwork _Network;
+		public Network Network => _Network?.NBitcoinNetwork;
 
 		public JsonSerializerSettings Settings { get; } = new JsonSerializerSettings();
-
-		public Serializer(Network network)
+		public Serializer(NBXplorerNetwork network)
 		{
 			_Network = network;
 			ConfigureSerializer(Settings);
@@ -32,7 +25,10 @@ namespace NBXplorer
 			if(settings == null)
 				throw new ArgumentNullException(nameof(settings));
 			NBitcoin.JsonConverters.Serializer.RegisterFrontConverters(settings, Network);
-			settings.Converters.Insert(0, new JsonConverters.CachedSerializer(Network));
+			if (Network != null)
+			{
+				settings.Converters.Insert(0, new JsonConverters.CachedSerializer(_Network));
+			}
 			settings.Converters.Insert(0, new JsonConverters.FeeRateJsonConverter());
 		}
 

@@ -102,7 +102,7 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/addresses/unused")]
-		public async Task<KeyPathInformation> GetUnusedAddress(
+		public async Task<IActionResult> GetUnusedAddress(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase strategy, DerivationFeature feature = DerivationFeature.Deposit, int skip = 0, bool reserve = false)
@@ -125,11 +125,36 @@ namespace NBXplorer.Controllers
 					}
 					_ = AddressPoolService.GenerateAddresses(network, strategy, feature);
 				}
-				return result;
+				_ = AddAddressToRPCIfNeeded(repository, result, strategy);
+				return Json(result, network.Serializer.Settings);
 			}
 			catch (NotSupportedException)
 			{
 				throw new NBXplorerError(400, "derivation-not-supported", $"The derivation scheme {feature} is not supported").AsException();
+			}
+		}
+
+		async Task AddAddressToRPCIfNeeded(Repository repository, KeyPathInformation result, DerivationStrategyBase strategyBase)
+		{
+			try
+			{
+				var ts = new DerivationSchemeTrackedSource(strategyBase);
+				var shouldImportRPC = (await repository.GetMetadata<string>(ts, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
+				if (!shouldImportRPC)
+					return;
+				var rpc = Waiters.GetWaiter(repository.Network).RPC;
+				if (await repository.GetMetadata<BitcoinExtKey>(ts, WellknownMetadataKeys.AccountHDKey) is BitcoinExtKey accountKey)
+				{
+					await rpc.ImportPrivKeyAsync(accountKey.Derive(result.KeyPath).PrivateKey.GetWif(result.Address.Network), null, false);
+				}
+				else
+				{
+					await rpc.ImportAddressAsync(result.Address, null, false);
+				}
+			}
+			catch (Exception ex)
+			{
+				Logs.Explorer.LogWarning(ex, "Error while trying to track an address with RPC");
 			}
 		}
 
@@ -155,7 +180,7 @@ namespace NBXplorer.Controllers
 			var result = (await repo.GetKeyInformations(new[] { script }))
 						   .SelectMany(k => k.Value)
 						   .ToArray();
-			return Json(result);
+			return Json(result, network.Serializer.Settings);
 		}
 
 		[HttpGet]
@@ -173,7 +198,7 @@ namespace NBXplorer.Controllers
 						   .FirstOrDefault();
 			if (result == null)
 				throw new NBXplorerError(404, "script-not-found", "The script does not seem to be tracked").AsException();
-			return Json(result);
+			return Json(result, network.Serializer.Settings);
 		}
 
 		[HttpGet]
@@ -184,7 +209,7 @@ namespace NBXplorer.Controllers
 			var waiter = Waiters.GetWaiter(network);
 			var chain = ChainProvider.GetChain(network);
 			var repo = RepositoryProvider.GetRepository(network);
-			
+
 			var location = waiter.GetLocation();
 			GetBlockchainInfoResponse blockchainInfo = null;
 			if (waiter.RPCAvailable)
@@ -238,7 +263,7 @@ namespace NBXplorer.Controllers
 									&& waiter.State == BitcoinDWaiterState.Ready
 									&& status.SyncHeight.HasValue
 									&& blockchainInfo.Headers - status.SyncHeight.Value < 3;
-			if(status.IsFullySynched)
+			if (status.IsFullySynched)
 			{
 				var now = DateTimeOffset.UtcNow;
 				await repo.Ping();
@@ -249,7 +274,7 @@ namespace NBXplorer.Controllers
 					Logs.Explorer.LogWarning($"Repository ping exceeded 30 seconds ({(int)status.RepositoryPingTime}), please report the issue to NBXplorer developers");
 				}
 			}
-			return Json(status);
+			return Json(status, network.Serializer.Settings);
 		}
 
 		private NBXplorerNetwork GetNetwork(string cryptoCode, bool checkRPC)
@@ -294,7 +319,7 @@ namespace NBXplorer.Controllers
 			{
 				if (listenedBlocks.ContainsKey(o.CryptoCode))
 				{
-					await server.Send(o);
+					await server.Send(o, GetSerializerSettings(o.CryptoCode));
 				}
 			}));
 			subscriptions.Add(_EventAggregator.Subscribe<Models.NewTransactionEvent>(async o =>
@@ -318,7 +343,7 @@ namespace NBXplorer.Controllers
 				if (forward)
 				{
 					var derivation = (o.TrackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
-					await server.Send(o);
+					await server.Send(o, GetSerializerSettings(o.CryptoCode));
 				}
 			}));
 			try
@@ -341,7 +366,7 @@ namespace NBXplorer.Controllers
 								{
 									foreach (var derivation in r.DerivationSchemes)
 									{
-										var parsed = new DerivationStrategyFactory(network.NBitcoinNetwork).Parse(derivation);
+										var parsed = network.DerivationStrategyFactory.Parse(derivation);
 										listenedDerivations.TryAdd((network.NBitcoinNetwork, parsed), parsed);
 									}
 								}
@@ -365,7 +390,7 @@ namespace NBXplorer.Controllers
 								{
 									foreach (var trackedSource in r.TrackedSources)
 									{
-										if (TrackedSource.TryParse(trackedSource, out var parsed, network.NBitcoinNetwork))
+										if (TrackedSource.TryParse(trackedSource, out var parsed, network))
 											listenedTrackedSource.TryAdd((network.NBitcoinNetwork, parsed), parsed);
 									}
 								}
@@ -384,6 +409,12 @@ namespace NBXplorer.Controllers
 			return new EmptyResult();
 		}
 
+		private JsonSerializerSettings GetSerializerSettings(string cryptoCode)
+		{
+			if (string.IsNullOrEmpty(cryptoCode))
+				return _SerializerSettings;
+			return this.GetNetwork(cryptoCode, false).JsonSerializerSettings;
+		}
 
 		[Route("cryptos/{cryptoCode}/events")]
 		public async Task<JArray> GetEvents(string cryptoCode, int lastEventId = 0, int? limit = null, bool longPolling = false, CancellationToken cancellationToken = default)
@@ -449,7 +480,7 @@ namespace NBXplorer.Controllers
 			var tx = Utils.ToTransactionResult(chain, result);
 			if (!includeTransaction)
 				tx.Transaction = null;
-			return Json(tx);
+			return Json(tx, network.Serializer.Settings);
 		}
 
 		[HttpPost]
@@ -592,7 +623,7 @@ namespace NBXplorer.Controllers
 
 			if (txId == null)
 			{
-				return Json(response);
+				return Json(response, repo.Serializer.Settings);
 			}
 			else if (fetchedTransactionInfo == null)
 			{
@@ -600,14 +631,17 @@ namespace NBXplorer.Controllers
 			}
 			else
 			{
-				return Json(fetchedTransactionInfo);
+				return Json(fetchedTransactionInfo, repo.Serializer.Settings);
 			}
 		}
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/rescan")]
-		public async Task<IActionResult> Rescan(string cryptoCode, [FromBody]RescanRequest rescanRequest)
+		public async Task<IActionResult> Rescan(string cryptoCode, [FromBody] JObject body)
 		{
+			if (body == null)
+				throw new ArgumentNullException(nameof(body));
+			var rescanRequest = ParseJObject<RescanRequest>(body, GetNetwork(cryptoCode, false));
 			if (rescanRequest == null)
 				throw new ArgumentNullException(nameof(rescanRequest));
 			if (rescanRequest?.Transactions == null)
@@ -647,7 +681,7 @@ namespace NBXplorer.Controllers
 			return Ok();
 		}
 
-		async Task<(uint256 BlockId, Transaction Transaction, DateTimeOffset BlockTime)> FetchTransaction(RPCClient rpc,  bool hasTxIndex, RescanRequest.TransactionToRescan transaction)
+		async Task<(uint256 BlockId, Transaction Transaction, DateTimeOffset BlockTime)> FetchTransaction(RPCClient rpc, bool hasTxIndex, RescanRequest.TransactionToRescan transaction)
 		{
 			if (transaction.Transaction != null)
 			{
@@ -698,7 +732,7 @@ namespace NBXplorer.Controllers
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/metadata/{key}")]
 		public async Task<IActionResult> SetMetadata(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
-			DerivationStrategyBase derivationScheme, string key, 
+			DerivationStrategyBase derivationScheme, string key,
 			[FromBody]
 			JToken value = null)
 		{
@@ -718,7 +752,7 @@ namespace NBXplorer.Controllers
 			var trackedSource = new DerivationSchemeTrackedSource(derivationScheme);
 			var repo = this.RepositoryProvider.GetRepository(network);
 			var result = await repo.GetMetadata<JToken>(trackedSource, key);
-			return result == null ? (IActionResult)NotFound() : Json(result);
+			return result == null ? (IActionResult)NotFound() : Json(result, repo.Serializer.Settings);
 		}
 		Encoding UTF8 = new UTF8Encoding(false);
 		[HttpPost]
@@ -756,13 +790,13 @@ namespace NBXplorer.Controllers
 			var info = ScanUTXOSetService.GetInformation(network, derivationScheme);
 			if (info == null)
 				throw new NBXplorerError(404, "scanutxoset-info-not-found", "ScanUTXOSet has not been called with this derivationScheme of the result has expired").AsException();
-			return Json(info);
+			return Json(info, network.Serializer.Settings);
 		}
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
-		public async Task<UTXOChanges> GetUTXOs(
+		public async Task<IActionResult> GetUTXOs(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
@@ -781,8 +815,6 @@ namespace NBXplorer.Controllers
 
 			changes = new UTXOChanges();
 			changes.CurrentHeight = chain.Height;
-			Stopwatch stopwatch = new Stopwatch();
-			stopwatch.Start();
 			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
 
 			changes.Confirmed = ToUTXOChange(transactions.ConfirmedState);
@@ -794,17 +826,10 @@ namespace NBXplorer.Controllers
 			FillUTXOsInformation(changes.Confirmed.UTXOs, transactions, changes.CurrentHeight);
 			FillUTXOsInformation(changes.Unconfirmed.UTXOs, transactions, changes.CurrentHeight);
 
-			stopwatch.Stop();
-			if (ExplorerConfiguration.AutoPruningTime != null &&
-			   stopwatch.Elapsed > ExplorerConfiguration.AutoPruningTime.Value)
-			{
-				await AttemptPrune(repo, transactions, transactions.ConfirmedState);
-			}
-
 			changes.TrackedSource = trackedSource;
 			changes.DerivationStrategy = (trackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
 
-			return changes;
+			return Json(changes, repo.Serializer.Settings);
 		}
 
 		private UTXOChange ToUTXOChange(UTXOState state)
@@ -813,64 +838,6 @@ namespace NBXplorer.Controllers
 			change.SpentOutpoints.AddRange(state.SpentUTXOs);
 			change.UTXOs.AddRange(state.UTXOByOutpoint.Select(u => new UTXO(u.Value)));
 			return change;
-		}
-
-		private async Task<int> AttemptPrune(Repository repo, AnnotatedTransactionCollection transactions, UTXOState state)
-		{
-			var network = repo.Network;
-			var trackedSource = transactions.TrackedSource;
-			var quarter = state.GetQuarterTransactionTime();
-			if (quarter != null)
-			{
-				Logs.Explorer.LogInformation($"{network.CryptoCode}: Pruning needed for {trackedSource.ToPrettyString()}...");
-
-				// Step 1. Mark all transactions whose UTXOs have been all spent for long enough (quarter of first seen time of all transaction)
-				var prunableIds = state.UTXOByOutpoint
-								.Prunable
-								.Where(p => OldEnough(transactions, p.PrunedBy, quarter.Value))
-								.Select(p => p.TransactionId)
-								.ToHashSet();
-
-				// Step2. Make sure that all their parent are also prunable (Ancestors first)
-				if (prunableIds.Count != 0)
-				{
-					foreach (var tx in transactions.ConfirmedTransactions)
-					{
-						if (prunableIds.Count == 0)
-							break;
-						if (!prunableIds.Contains(tx.Record.TransactionHash))
-							continue;
-						foreach (var parent in tx.Record.SpentOutpoints
-														.Select(spent => transactions.GetByTxId(spent.Hash))
-														.Where(parent => parent != null)
-														.Where(parent => !prunableIds.Contains(parent.Record.TransactionHash)))
-						{
-							prunableIds.Remove(tx.Record.TransactionHash);
-						}
-					}
-				}
-
-				if (prunableIds.Count == 0)
-					Logs.Explorer.LogInformation($"{network.CryptoCode}: Impossible to prune {trackedSource.ToPrettyString()}, if you wish to improve performance, please decrease the number of UTXOs");
-				else
-				{
-					await repo.Prune(trackedSource, prunableIds
-													.Select(id => transactions.GetByTxId(id).Record)
-													.ToList());
-					Logs.Explorer.LogInformation($"{network.CryptoCode}: Pruned {prunableIds.Count} transactions");
-					return prunableIds.Count;
-				}
-			}
-			return 0;
-		}
-
-		private bool OldEnough(AnnotatedTransactionCollection transactions, uint256 prunedBy, DateTimeOffset pruneBefore)
-		{
-			// Let's make sure that the transaction that made this transaction pruned has enough confirmations
-			var tx = transactions.GetByTxId(prunedBy);
-			if (tx?.Height is null)
-				return false;
-			return tx.Record.FirstSeen <= pruneBefore;
 		}
 
 		private static bool IsMatching(TrackedSource trackedSource, Script s, AnnotatedTransactionCollection transactions)
@@ -901,7 +868,7 @@ namespace NBXplorer.Controllers
 
 		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(Repository repo, SlimChain chain, TrackedSource trackedSource, uint256 txId = null)
 		{
-			var transactions = await repo.GetTransactions(trackedSource, txId);
+			var transactions = await repo.GetTransactions(trackedSource, txId, this.HttpContext.RequestAborted);
 
 			// If the called is interested by only a single txId, we need to fetch the parents as well
 			if (txId != null)
@@ -928,7 +895,7 @@ namespace NBXplorer.Controllers
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
 			[ModelBinder(BinderType = typeof(BitcoinAddressModelBinder))]
-			BitcoinAddress address)
+			BitcoinAddress address, bool testMempoolAccept = false)
 		{
 			var network = GetNetwork(cryptoCode, true);
 			var trackedSource = GetTrackedSource(derivationScheme ?? extPubKey, address);
@@ -945,10 +912,20 @@ namespace NBXplorer.Controllers
 			RPCException rpcEx = null;
 			try
 			{
+				if (testMempoolAccept)
+				{
+					var mempoolAccept = await waiter.RPC.TestMempoolAcceptAsync(tx);
+					if (mempoolAccept.IsAllowed)
+						return new BroadcastResult(true);
+					return new BroadcastResult(false)
+					{
+						RPCCodeMessage = $"{mempoolAccept.RejectReason} ({mempoolAccept.RejectCode})"
+					};
+				}
 				await waiter.RPC.SendRawTransactionAsync(tx);
 				return new BroadcastResult(true);
 			}
-			catch (RPCException ex)
+			catch (RPCException ex) when (!testMempoolAccept)
 			{
 				rpcEx = ex;
 				Logs.Explorer.LogInformation($"{network.CryptoCode}: Transaction {tx.GetHash()} failed to broadcast (Code: {ex.RPCCode}, Message: {ex.RPCCodeMessage}, Details: {ex.Message} )");
@@ -989,19 +966,133 @@ namespace NBXplorer.Controllers
 		}
 
 		[HttpPost]
+		[Route("cryptos/{cryptoCode}/derivations")]
+		public async Task<IActionResult> GenerateWallet(string cryptoCode, [FromBody] GenerateWalletRequest request)
+		{
+			if (request == null)
+				request = new GenerateWalletRequest();
+			var network = GetNetwork(cryptoCode, request.ImportKeysToRPC);
+			if (network.CoinType == null)
+				// Don't document, only shitcoins nobody use goes into this
+				throw new NBXplorerException(new NBXplorerError(400, "not-supported", "This feature is not supported for this coin because we don't have CoinType information"));
+			request.WordList ??= Wordlist.English;
+			request.WordCount ??= WordCount.Twelve;
+			request.ScriptPubKeyType ??= ScriptPubKeyType.Segwit;
+			if (request.ScriptPubKeyType is null)
+			{
+				request.ScriptPubKeyType = network.NBitcoinNetwork.Consensus.SupportSegwit ? ScriptPubKeyType.Segwit : ScriptPubKeyType.Legacy;
+			}
+			if (!network.NBitcoinNetwork.Consensus.SupportSegwit && request.ScriptPubKeyType != ScriptPubKeyType.Legacy)
+				throw new NBXplorerException(new NBXplorerError(400, "segwit-not-supported", "Segwit is not supported, please explicitely set scriptPubKeyType to Legacy"));
+
+			var repo = RepositoryProvider.GetRepository(network);
+			var mnemonic = new Mnemonic(request.WordList, request.WordCount.Value);
+			var masterKey = mnemonic.DeriveExtKey(request.Passphrase).GetWif(network.NBitcoinNetwork);
+			var keyPath = GetDerivationKeyPath(request.ScriptPubKeyType.Value, request.AccountNumber, network);
+			var accountKey = masterKey.Derive(keyPath);
+			DerivationStrategyBase derivation = network.DerivationStrategyFactory.CreateDirectDerivationStrategy(accountKey.Neuter(), new DerivationStrategyOptions()
+			{
+				ScriptPubKeyType = request.ScriptPubKeyType.Value
+			});
+
+			var derivationTrackedSource = new DerivationSchemeTrackedSource(derivation);
+			List<Task> saveMetadata = new List<Task>();
+			if (request.SavePrivateKeys)
+			{
+				saveMetadata.AddRange(
+				new[] {
+					repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.Mnemonic, mnemonic.ToString()),
+					repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.MasterHDKey, masterKey),
+					repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.AccountHDKey, accountKey)
+				});
+			}
+
+			var accountKeyPath = new RootedKeyPath(masterKey.GetPublicKey().GetHDFingerPrint(), keyPath);
+			saveMetadata.Add(repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.AccountKeyPath, accountKeyPath));
+			saveMetadata.Add(repo.SaveMetadata<string>(derivationTrackedSource, WellknownMetadataKeys.ImportAddressToRPC, request.ImportKeysToRPC.ToString()));
+			await Task.WhenAll(saveMetadata.ToArray());
+			await TrackWallet(cryptoCode, derivation, null);
+			return Json(new GenerateWalletResponse()
+			{
+				MasterHDKey = masterKey,
+				AccountHDKey = accountKey,
+				AccountKeyPath = accountKeyPath,
+				DerivationScheme = derivation,
+				Mnemonic = mnemonic.ToString(),
+				Passphrase = request.Passphrase ?? string.Empty,
+				WordCount = request.WordCount.Value,
+				WordList = request.WordList
+			}, network.Serializer.Settings);
+		}
+
+		private KeyPath GetDerivationKeyPath(ScriptPubKeyType scriptPubKeyType, int accountNumber, NBXplorerNetwork network)
+		{
+			var keyPath = new KeyPath(scriptPubKeyType == ScriptPubKeyType.Legacy ? "44'" :
+				scriptPubKeyType == ScriptPubKeyType.Segwit ? "84'" :
+				scriptPubKeyType == ScriptPubKeyType.SegwitP2SH ? "49'" :
+				throw new NotSupportedException(scriptPubKeyType.ToString())); // Should never happen
+			return keyPath.Derive(network.CoinType)
+				   .Derive(accountNumber, true);
+		}
+
+		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/prune")]
 		public async Task<PruneResponse> Prune(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
-			DerivationStrategyBase derivationScheme)
+			DerivationStrategyBase derivationScheme, [FromBody] PruneRequest request)
 		{
+			request ??= new PruneRequest();
+			request.DaysToKeep ??= 1.0;
 			var trackedSource = new DerivationSchemeTrackedSource(derivationScheme);
 			var network = GetNetwork(cryptoCode, false);
 			var chain = ChainProvider.GetChain(network);
 			var repo = RepositoryProvider.GetRepository(network);
 			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
-			int pruned = await AttemptPrune(repo, transactions, transactions.ConfirmedState);
-			return new PruneResponse() { TotalPruned = pruned };
+			var state = transactions.ConfirmedState;
+			var prunableIds = new HashSet<uint256>();
+
+			var keepConfMax = network.NBitcoinNetwork.Consensus.GetExpectedBlocksFor(TimeSpan.FromDays(request.DaysToKeep.Value));
+			var tip = chain.Height;
+			// Step 1. We can prune if all UTXOs are spent
+			foreach (var tx in transactions.ConfirmedTransactions)
+			{
+				if (tx.Height is int h && tip - h + 1 > keepConfMax)
+				{
+					if (tx.Record.ReceivedCoins.All(c => state.SpentUTXOs.Contains(c.Outpoint)))
+					{
+						prunableIds.Add(tx.Record.Key.TxId);
+					}
+				}
+			}
+
+			// Step2. However, we need to remove those who are spending a UTXO from a transaction that is not pruned
+			if (prunableIds.Count != 0)
+			{
+				foreach (var tx in transactions.ConfirmedTransactions)
+				{
+					if (prunableIds.Count == 0)
+						break;
+					if (!prunableIds.Contains(tx.Record.TransactionHash))
+						continue;
+					foreach (var parent in tx.Record.SpentOutpoints
+													.Select(spent => transactions.GetByTxId(spent.Hash))
+													.Where(parent => parent != null)
+													.Where(parent => !prunableIds.Contains(parent.Record.TransactionHash)))
+					{
+						prunableIds.Remove(tx.Record.TransactionHash);
+					}
+				}
+			}
+
+			if (prunableIds.Count != 0)
+			{
+				await repo.Prune(trackedSource, prunableIds
+												.Select(id => transactions.GetByTxId(id).Record)
+												.ToList());
+				Logs.Explorer.LogInformation($"{network.CryptoCode}: Pruned {prunableIds.Count} transactions");
+			}
+			return new PruneResponse() { TotalPruned = prunableIds.Count };
 		}
 	}
 }

@@ -13,15 +13,16 @@ namespace NBXplorer.Models
 		{
 
 		}
-		public KeyPathInformation(KeyPathTemplates keyPathTemplates, KeyPath keyPath, DerivationStrategyBase derivationStrategy)
+		public KeyPathInformation(DerivationFeature feature, KeyPath keyPath, DerivationStrategyBase derivationStrategy, NBXplorerNetwork network)
 		{
 			var derivation = derivationStrategy.GetDerivation(keyPath);
 			ScriptPubKey = derivation.ScriptPubKey;
 			Redeem = derivation.Redeem;
 			TrackedSource = new DerivationSchemeTrackedSource(derivationStrategy);
 			DerivationStrategy = derivationStrategy;
-			Feature = keyPathTemplates.GetDerivationFeature(keyPath);
+			Feature = feature;
 			KeyPath = keyPath;
+			Address = network.CreateAddress(derivationStrategy, keyPath, ScriptPubKey);
 		}
 		public TrackedSource TrackedSource { get; set; }
 
@@ -45,7 +46,7 @@ namespace NBXplorer.Models
 			get; set;
 		}
 		[JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
-		public string Address { get; set; }
+		public BitcoinAddress Address { get; set; }
 		[JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
 		public Script Redeem
 		{

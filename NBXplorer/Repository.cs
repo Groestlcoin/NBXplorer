@@ -327,7 +327,7 @@ namespace NBXplorer
 				throw new ArgumentNullException(nameof(network));
 			_Network = network;
 			this.keyPathTemplates = keyPathTemplates;
-			Serializer = new Serializer(_Network.NBitcoinNetwork);
+			Serializer = new Serializer(_Network);
 			_Network = network;
 			_TxContext = new DBriizeTransactionContext(engine);
 			_TxContext.UnhandledException += (s, ex) =>
@@ -417,15 +417,11 @@ namespace NBXplorer
 			{
 				var index = highestGenerated + i + 1;
 				var derivation = feature.Derive((uint)index);
-				var info = new KeyPathInformation()
-				{
-					ScriptPubKey = derivation.ScriptPubKey,
-					Redeem = derivation.Redeem,
-					TrackedSource = new DerivationSchemeTrackedSource(strategy),
-					DerivationStrategy = strategy,
-					Feature = derivationFeature,
-					KeyPath = keyPathTemplates.GetKeyPathTemplate(derivationFeature).GetKeyPath(index, false)
-				};
+				var info = new KeyPathInformation(
+					derivationFeature,
+					keyPathTemplates.GetKeyPathTemplate(derivationFeature).GetKeyPath(index, false),
+					strategy,
+					Network);
 				keyPathInformations[i] = info;
 			});
 			for (int i = 0; i < toGenerate; i++)
@@ -502,7 +498,8 @@ namespace NBXplorer
 				var info = new KeyPathInformation()
 				{
 					ScriptPubKey = address.ScriptPubKey,
-					TrackedSource = (TrackedSource)address
+					TrackedSource = (TrackedSource)address,
+					Address = (address as BitcoinAddress) ?? address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork)
 				};
 				var bytes = ToBytes(info);
 				GetScriptsIndex(tx, address.ScriptPubKey).Insert(address.ScriptPubKey.Hash.ToString(), bytes);
@@ -737,7 +734,7 @@ namespace NBXplorer
 			get; set;
 		} = 30;
 
-		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null)
+		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, CancellationToken cancellation = default)
 		{
 
 			bool needUpdate = false;
@@ -773,7 +770,7 @@ namespace NBXplorer
 
 				}
 				return result;
-			});
+			}, cancellation);
 
 			TransactionMatchData previousConfirmed = null;
 			foreach (var tx in transactions)
@@ -1199,7 +1196,7 @@ namespace NBXplorer
 						{
 							foreach (var kv in value.KnownKeyPathMapping)
 							{
-								var info = new KeyPathInformation(keyPathTemplates, kv.Value, s.DerivationStrategy);
+								var info = new KeyPathInformation(keyPathTemplates.GetDerivationFeature(kv.Value), kv.Value, s.DerivationStrategy, Network);
 								var availableIndex = GetAvailableKeysIndex(tx, s.DerivationStrategy, info.Feature);
 								var reservedIndex = GetReservedKeysIndex(tx, s.DerivationStrategy, info.Feature);
 								var index = info.GetIndex();
@@ -1237,16 +1234,6 @@ namespace NBXplorer
 				foreach (var tracked in prunable)
 				{
 					table.RemoveKey(tracked.Key.ToString());
-					if (tracked.Key.BlockHash != null)
-					{
-						var pruned = tracked.Prune();
-						var data = new TransactionMatchData(pruned);
-						MemoryStream ms = new MemoryStream();
-						BitcoinStream bs = new BitcoinStream(ms, true);
-						bs.ConsensusFactory = Network.NBitcoinNetwork.Consensus.ConsensusFactory;
-						data.ReadWrite(bs);
-						table.Insert(data.GetRowKey(), ms.ToArrayEfficient());
-					}
 				}
 				tx.Commit();
 			});
