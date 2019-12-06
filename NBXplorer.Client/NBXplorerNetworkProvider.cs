@@ -1,7 +1,5 @@
 ﻿using NBitcoin;
-using System;
 using System.Collections.Generic;
-using System.Text;
 
 namespace NBXplorer
 {
@@ -27,7 +25,8 @@ namespace NBXplorer
 			InitGobyte(networkType);
 			InitColossus(networkType);
 			InitChaincoin(networkType);
-			foreach(var chain in _Networks.Values)
+			InitLiquid(networkType);
+			foreach (var chain in _Networks.Values)
 			{
 				chain.DerivationStrategyFactory ??= new DerivationStrategy.DerivationStrategyFactory(chain.NBitcoinNetwork);
 			}
@@ -53,6 +52,8 @@ namespace NBXplorer
 		Dictionary<string, NBXplorerNetwork> _Networks = new Dictionary<string, NBXplorerNetwork>();
 		private void Add(NBXplorerNetwork network)
 		{
+			if (network.NBitcoinNetwork == null)
+				return;
 			_Networks.Add(network.CryptoCode, network);
 		}
 	}
