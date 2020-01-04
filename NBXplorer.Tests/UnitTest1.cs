@@ -610,7 +610,7 @@ namespace NBXplorer.Tests
 			var outpoints = psbt2.PSBT.GetOriginalTransaction().Inputs.Select(i => i.PrevOut).ToArray();
 			Assert.Equal(2, outpoints.Length);
 
-			psbt2 = tester.Client.CreatePSBT(userDerivationScheme, new CreatePSBTRequest()
+			var request = new CreatePSBTRequest()
 			{
 				IncludeOnlyOutpoints = new List<OutPoint>() { outpoints[0] },
 				Destinations =
@@ -621,16 +621,21 @@ namespace NBXplorer.Tests
 								SweepAll = true
 							}
 						},
+				MinValue = Money.Coins(1.0m),
 				FeePreference = new FeePreference()
 				{
 					ExplicitFee = Money.Coins(0.000001m),
 				},
 				ReserveChangeAddress = false
-			});
+			};
+			psbt2 = tester.Client.CreatePSBT(userDerivationScheme, request);
 
 			var actualOutpoints = psbt2.PSBT.GetOriginalTransaction().Inputs.Select(i => i.PrevOut).ToArray();
 			Assert.Single(actualOutpoints);
 			Assert.Equal(outpoints[0], actualOutpoints[0]);
+			request.MinValue = Money.Coins(0.1m);
+			ex = Assert.Throws<NBXplorerException>(() => tester.Client.CreatePSBT(userDerivationScheme, request));
+			Assert.Equal("not-enough-funds", ex.Error.Code);
 
 			psbt2 = tester.Client.CreatePSBT(userDerivationScheme, new CreatePSBTRequest()
 			{
@@ -1127,8 +1132,10 @@ namespace NBXplorer.Tests
 		[Trait("Broker", "RabbitMq")]
 		public async Task CanSendRabbitMqNewTransactionEventMessage()
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.CreateNoAutoStart())
 			{
+				tester.UseRabbitMQ = true;
+				tester.Start();
 				tester.Client.WaitServerStarted();
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter(), true);
@@ -1136,33 +1143,33 @@ namespace NBXplorer.Tests
 
 				// RabbitMq connection
 				var factory = new ConnectionFactory() { 
-                    HostName = RabbitMqTestConfig.RabbitMqHostName,
+                   HostName = RabbitMqTestConfig.RabbitMqHostName,
 					VirtualHost = RabbitMqTestConfig.RabbitMqVirtualHost,
-                    UserName = RabbitMqTestConfig.RabbitMqUsername,
-                    Password = RabbitMqTestConfig.RabbitMqPassword };
-                IConnection connection = factory.CreateConnection();
-                var channel = connection.CreateModel();
-                channel.ExchangeDeclare(RabbitMqTestConfig.RabbitMqTransactionExchange, ExchangeType.Topic);
+                   UserName = RabbitMqTestConfig.RabbitMqUsername,
+                   Password = RabbitMqTestConfig.RabbitMqPassword };
+               IConnection connection = factory.CreateConnection();
+               var channel = connection.CreateModel();
+               channel.ExchangeDeclare(RabbitMqTestConfig.RabbitMqTransactionExchange, ExchangeType.Topic);
 
 				// Setup a queue for all transactions
 				var allTransactionsQueue = "allTransactions";
 				var allTransactionsRoutingKey = $"transactions.#";
 				channel.QueueDeclare(allTransactionsQueue, true, false, false);
-                channel.QueueBind(allTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allTransactionsRoutingKey);
+               channel.QueueBind(allTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allTransactionsRoutingKey);
 				while(channel.BasicGet(allTransactionsQueue, true) != null) {} // Empty the queue
 
 				// Setup a queue for all [CryptoCode] transactions
 				var allBtcTransactionsQueue = "allBtcTransactions";
 				var allBtcTransactionsRoutingKey = $"transactions.{tester.Client.Network.CryptoCode}.#";
 				channel.QueueDeclare(allBtcTransactionsQueue, true, false, false);
-                channel.QueueBind(allBtcTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allBtcTransactionsRoutingKey);
+               channel.QueueBind(allBtcTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allBtcTransactionsRoutingKey);
 				while(channel.BasicGet(allBtcTransactionsQueue, true) != null) {} 
 
 				// Setup a queue for all unconfirmed transactions
 				var allUnConfirmedTransactionsQueue = "allUnConfirmedTransactions";
 				var allUnConfirmedTransactionsRoutingKey = $"transactions.*.unconfirmed";
 				channel.QueueDeclare(allUnConfirmedTransactionsQueue, true, false, false);
-                channel.QueueBind(allUnConfirmedTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allUnConfirmedTransactionsRoutingKey);
+               channel.QueueBind(allUnConfirmedTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allUnConfirmedTransactionsRoutingKey);
 				while(channel.BasicGet(allUnConfirmedTransactionsQueue, true) != null) {} 
 				
 				//Create a new UTXO for our tracked key
@@ -1200,7 +1207,7 @@ namespace NBXplorer.Tests
 				var allConfirmedTransactionsQueue = "allConfirmedTransactions";
 				var allConfirmedTransactionsRoutingKey = $"transactions.*.confirmed";
 				channel.QueueDeclare(allConfirmedTransactionsQueue, true, false, false);
-                channel.QueueBind(allConfirmedTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allConfirmedTransactionsRoutingKey);
+               channel.QueueBind(allConfirmedTransactionsQueue, RabbitMqTestConfig.RabbitMqTransactionExchange, allConfirmedTransactionsRoutingKey);
 				while(channel.BasicGet(allConfirmedTransactionsQueue, true) != null) {} 
 
 				tester.RPC.EnsureGenerate(1);
@@ -1215,8 +1222,10 @@ namespace NBXplorer.Tests
 		[Trait("Broker", "RabbitMq")]
 		public async Task CanSendRabbitMqNewBlockEventMessage()
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.CreateNoAutoStart())
 			{
+				tester.UseRabbitMQ = true;
+				tester.Start();
 				tester.Client.WaitServerStarted();
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter(), true);
@@ -1224,26 +1233,26 @@ namespace NBXplorer.Tests
 
 				// RabbitMq connection
 				var factory = new ConnectionFactory() { 
-                    HostName = RabbitMqTestConfig.RabbitMqHostName,
+                   HostName = RabbitMqTestConfig.RabbitMqHostName,
 					VirtualHost = RabbitMqTestConfig.RabbitMqVirtualHost,
-                    UserName = RabbitMqTestConfig.RabbitMqUsername,
-                    Password = RabbitMqTestConfig.RabbitMqPassword };
-                IConnection connection = factory.CreateConnection();
-                var channel = connection.CreateModel();
-                channel.ExchangeDeclare(RabbitMqTestConfig.RabbitMqBlockExchange, ExchangeType.Topic);
+                   UserName = RabbitMqTestConfig.RabbitMqUsername,
+                   Password = RabbitMqTestConfig.RabbitMqPassword };
+               IConnection connection = factory.CreateConnection();
+               var channel = connection.CreateModel();
+               channel.ExchangeDeclare(RabbitMqTestConfig.RabbitMqBlockExchange, ExchangeType.Topic);
 
 				// Setup a queue for all blocks
 				var allBlocksQueue = "allBlocks";
 				var allBlocksRoutingKey = $"blocks.#";
 				channel.QueueDeclare(allBlocksQueue, true, false, false);
-                channel.QueueBind(allBlocksQueue, RabbitMqTestConfig.RabbitMqBlockExchange, allBlocksRoutingKey);
+               channel.QueueBind(allBlocksQueue, RabbitMqTestConfig.RabbitMqBlockExchange, allBlocksRoutingKey);
 				while(channel.BasicGet(allBlocksQueue, true) != null) {} // Empty the queue
 
 				// Setup a queue for all [CryptoCode] blocks
 				var allBtcBlocksQueue = "allBtcblocks";
 				var allBtcBlocksRoutingKey = $"blocks.{tester.Client.Network.CryptoCode}";
 				channel.QueueDeclare(allBtcBlocksQueue, true, false, false);
-                channel.QueueBind(allBtcBlocksQueue, RabbitMqTestConfig.RabbitMqBlockExchange, allBtcBlocksRoutingKey);
+               channel.QueueBind(allBtcBlocksQueue, RabbitMqTestConfig.RabbitMqBlockExchange, allBtcBlocksRoutingKey);
 				while(channel.BasicGet(allBtcBlocksQueue, true) != null) {} 
 
 				var expectedBlockId = tester.Explorer.CreateRPCClient().Generate(1)[0];
