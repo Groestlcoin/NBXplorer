@@ -196,6 +196,7 @@ namespace NBXplorer.Controllers
 					rpc.RequestTimeout = TimeSpan.FromMinutes(1.0);
 					blockchainInfo = await rpc.GetBlockchainInfoAsyncEx();
 				}
+				catch (HttpRequestException ex) when (ex.InnerException is IOException) { } // Sometimes "The response ended prematurely."
 				catch (IOException) { } // Sometimes "The response ended prematurely."
 				catch (OperationCanceledException) // Timeout, can happen if core is really busy
 				{
@@ -943,6 +944,7 @@ namespace NBXplorer.Controllers
 					};
 				}
 				await waiter.RPC.SendRawTransactionAsync(tx);
+				await waiter.GetExplorerBehavior()?.SaveMatches(tx);
 				return new BroadcastResult(true);
 			}
 			catch (RPCException ex) when (!testMempoolAccept)
@@ -969,6 +971,7 @@ namespace NBXplorer.Controllers
 					{
 						await waiter.RPC.SendRawTransactionAsync(tx);
 						Logs.Explorer.LogInformation($"{network.CryptoCode}: Broadcast success");
+						await waiter.GetExplorerBehavior()?.SaveMatches(tx);
 						return new BroadcastResult(true);
 					}
 					catch (RPCException)
