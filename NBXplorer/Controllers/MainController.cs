@@ -254,7 +254,8 @@ namespace NBXplorer.Controllers
 					Capabilities = new NodeCapabilities()
 					{
 						CanScanTxoutSet = waiter.RPC.Capabilities.SupportScanUTXOSet,
-						CanSupportSegwit = waiter.RPC.Capabilities.SupportSegwit
+						CanSupportSegwit = waiter.RPC.Capabilities.SupportSegwit,
+						CanSupportTransactionCheck = waiter.RPC.Capabilities.SupportTestMempoolAccept
 					},
 					ExternalAddresses = (networkInfo.localaddresses ?? Array.Empty<GetNetworkInfoResponse.LocalAddress>())
 										.Select(l => $"{l.address}:{l.port}").ToArray()
@@ -955,6 +956,8 @@ namespace NBXplorer.Controllers
 			tx.FromBytes(buffer.ToArrayEfficient());
 
 			var waiter = this.Waiters.GetWaiter(network);
+			if (testMempoolAccept && !waiter.RPC.Capabilities.SupportTestMempoolAccept)
+				throw new NBXplorerException(new NBXplorerError(400, "not-supported", "This feature is not supported for this crypto currency"));
 			var repo = RepositoryProvider.GetRepository(network);
 			var chain = ChainProvider.GetChain(network);
 			RPCException rpcEx = null;
@@ -965,9 +968,12 @@ namespace NBXplorer.Controllers
 					var mempoolAccept = await waiter.RPC.TestMempoolAcceptAsync(tx);
 					if (mempoolAccept.IsAllowed)
 						return new BroadcastResult(true);
+					var rpcCode = GetRPCCodeFromReason(mempoolAccept.RejectReason);
 					return new BroadcastResult(false)
 					{
-						RPCCodeMessage = $"{mempoolAccept.RejectReason} ({mempoolAccept.RejectCode})"
+						RPCCode = rpcCode,
+						RPCMessage = rpcCode == RPCErrorCode.RPC_TRANSACTION_REJECTED ? "Transaction was rejected by network rules" : null,
+						RPCCodeMessage = mempoolAccept.RejectReason,
 					};
 				}
 				await waiter.RPC.SendRawTransactionAsync(tx);
@@ -1013,6 +1019,18 @@ namespace NBXplorer.Controllers
 					RPCMessage = rpcEx.Message
 				};
 			}
+		}
+
+		private RPCErrorCode? GetRPCCodeFromReason(string rejectReason)
+		{
+			return rejectReason switch
+			{
+				"Transaction already in block chain" => RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN,
+				"Transaction rejected by AcceptToMemoryPool" => RPCErrorCode. RPC_TRANSACTION_REJECTED,
+				"AcceptToMemoryPool failed" => RPCErrorCode. RPC_TRANSACTION_REJECTED,
+				"insufficient fee" => RPCErrorCode. RPC_TRANSACTION_REJECTED,
+				_ => RPCErrorCode. RPC_TRANSACTION_ERROR
+			};
 		}
 
 		[HttpPost]
@@ -1132,6 +1150,8 @@ namespace NBXplorer.Controllers
 			}
 
 			// Step2. However, we need to remove those who are spending a UTXO from a transaction that is not pruned
+			retry:
+			bool removedPrunables = false;
 			if (prunableIds.Count != 0)
 			{
 				foreach (var tx in transactions.ConfirmedTransactions)
@@ -1146,9 +1166,13 @@ namespace NBXplorer.Controllers
 													.Where(parent => !prunableIds.Contains(parent.Record.TransactionHash)))
 					{
 						prunableIds.Remove(tx.Record.TransactionHash);
+						removedPrunables = true;
 					}
 				}
 			}
+			// If we removed some prunable, it may have made other transactions unprunable.
+			if (removedPrunables)
+				goto retry;
 
 			if (prunableIds.Count != 0)
 			{

@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using NBitcoin.RPC;
 
 namespace NBXplorer.Controllers
 {
@@ -175,16 +176,16 @@ namespace NBXplorer.Controllers
 				tx.Version = v;
 			psbt = txBuilder.CreatePSBTFrom(tx, false, SigHash.All);
 
-			await UpdatePSBTCore(new UpdatePSBTRequest()
+			var update = new UpdatePSBTRequest()
 			{
 				DerivationScheme = strategy,
 				PSBT = psbt,
 				RebaseKeyPaths = request.RebaseKeyPaths
-			}, network);
-
+			};
+			await UpdatePSBTCore(update, network);
 			var resp = new CreatePSBTResponse()
 			{
-				PSBT = psbt,
+				PSBT = update.PSBT,
 				ChangeAddress = hasChange ? change.ScriptPubKey.GetDestinationAddress(network.NBitcoinNetwork) : null
 			};
 			return Json(resp, network.JsonSerializerSettings);
@@ -211,9 +212,9 @@ namespace NBXplorer.Controllers
 			var rpc = Waiters.GetWaiter(network);
 			await UpdateUTXO(update, repo, rpc);
 
-			if (update.DerivationScheme is DerivationStrategyBase)
+			if (update.DerivationScheme is DerivationStrategyBase derivationScheme)
 			{
-				foreach (var extpub in update.DerivationScheme.GetExtPubKeys().Select(e => e.GetWif(network.NBitcoinNetwork)))
+				foreach (var extpub in derivationScheme.GetExtPubKeys().Select(e => e.GetWif(network.NBitcoinNetwork)))
 				{
 					update.PSBT.GlobalXPubs.AddOrReplace(extpub, new RootedKeyPath(extpub, new KeyPath()));
 				}
@@ -226,6 +227,8 @@ namespace NBXplorer.Controllers
 			HashSet<PubKey> rebased = new HashSet<PubKey>();
 			if (update.RebaseKeyPaths != null)
 			{
+				if (update.RebaseKeyPaths.Any(r => r.AccountKey is null))
+					throw new NBXplorerException(new NBXplorerError(400, "missing-parameter", "rebaseKeyPaths[].accountKey is missing"));
 				foreach (var rebase in update.RebaseKeyPaths.Where(r => rebased.Add(r.AccountKey.GetPublicKey())))
 				{
 					if (rebase.AccountKeyPath == null)
@@ -234,12 +237,16 @@ namespace NBXplorer.Controllers
 				}
 			}
 
-			var accountKeyPath = await repo.GetMetadata<RootedKeyPath>(new DerivationSchemeTrackedSource(update.DerivationScheme), WellknownMetadataKeys.AccountKeyPath);
-			if (accountKeyPath != null)
+			if (update.DerivationScheme is DerivationStrategyBase derivationScheme2)
 			{
-				foreach (var pubkey in update.DerivationScheme.GetExtPubKeys().Where(p => rebased.Add(p.PubKey)))
+				var accountKeyPath = await repo.GetMetadata<RootedKeyPath>(
+					new DerivationSchemeTrackedSource(derivationScheme2), WellknownMetadataKeys.AccountKeyPath);
+				if (accountKeyPath != null)
 				{
-					update.PSBT.RebaseKeyPaths(pubkey, accountKeyPath);
+					foreach (var pubkey in derivationScheme2.GetExtPubKeys().Where(p => rebased.Add(p.PubKey)))
+					{
+						update.PSBT.RebaseKeyPaths(pubkey, accountKeyPath);
+					}
 				}
 			}
 		}
@@ -271,7 +278,7 @@ namespace NBXplorer.Controllers
 			}
 
 			List<Script> redeems = new List<Script>();
-			foreach (var c in update.PSBT.Outputs.OfType<PSBTCoin>().Concat(update.PSBT.Inputs))
+			foreach (var c in update.PSBT.Outputs.OfType<PSBTCoin>().Concat(update.PSBT.Inputs.Where(o => !o.IsFinalized())))
 			{
 				var script = c.GetCoin()?.ScriptPubKey;
 				if (script != null &&
@@ -305,20 +312,39 @@ namespace NBXplorer.Controllers
 
 		private async Task UpdateUTXO(UpdatePSBTRequest update, Repository repo, BitcoinDWaiter rpc)
 		{
-			AnnotatedTransactionCollection txs = null;
-			// First, we check for data in our history
-			foreach (var input in update.PSBT.Inputs.Where(NeedUTXO))
+			if (rpc?.RPCAvailable is true)
 			{
-				txs = txs ?? await GetAnnotatedTransactions(repo, ChainProvider.GetChain(repo.Network), new DerivationSchemeTrackedSource(update.DerivationScheme));
-				if (txs.GetByTxId(input.PrevOut.Hash) is AnnotatedTransaction tx)
+				try
 				{
-					if (!tx.Record.Key.IsPruned)
+					update.PSBT = await rpc.RPC.UTXOUpdatePSBT(update.PSBT);
+				}
+				// Best effort
+				catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_METHOD_NOT_FOUND)
+				{
+				}
+				catch
+				{
+				}
+			}
+
+			if (update.DerivationScheme is DerivationStrategyBase derivationScheme)
+			{
+				AnnotatedTransactionCollection txs = null;
+				// First, we check for data in our history
+				foreach (var input in update.PSBT.Inputs.Where(NeedUTXO))
+				{
+					txs = txs ?? await GetAnnotatedTransactions(repo, ChainProvider.GetChain(repo.Network), new DerivationSchemeTrackedSource(derivationScheme));
+					if (txs.GetByTxId(input.PrevOut.Hash) is AnnotatedTransaction tx)
 					{
-						input.NonWitnessUtxo = tx.Record.Transaction;
-					}
-					else
-					{
-						input.WitnessUtxo = tx.Record.ReceivedCoins.FirstOrDefault(c => c.Outpoint.N == input.Index)?.TxOut;
+						if (!tx.Record.Key.IsPruned)
+						{
+							input.NonWitnessUtxo = tx.Record.Transaction;
+						}
+						else
+						{
+							input.WitnessUtxo = tx.Record.ReceivedCoins.FirstOrDefault(c => c.Outpoint.N == input.Index)
+								?.TxOut;
+						}
 					}
 				}
 			}
