@@ -21,6 +21,7 @@ using System.Net.WebSockets;
 using Newtonsoft.Json;
 using System.Collections.Concurrent;
 using System.Reflection;
+using NBXplorer.Analytics;
 
 namespace NBXplorer.Controllers
 {
@@ -39,7 +40,8 @@ namespace NBXplorer.Controllers
 			ScanUTXOSetServiceAccessor scanUTXOSetService,
 			RebroadcasterHostedService rebroadcaster,
 			KeyPathTemplates keyPathTemplates,
-			MvcNewtonsoftJsonOptions jsonOptions
+			MvcNewtonsoftJsonOptions jsonOptions,
+			Analytics.FingerprintHostedService fingerprintService
 			)
 		{
 			ExplorerConfiguration = explorerConfiguration;
@@ -51,10 +53,12 @@ namespace NBXplorer.Controllers
 			Waiters = waiters;
 			Rebroadcaster = rebroadcaster;
 			this.keyPathTemplates = keyPathTemplates;
+			this.fingerprintService = fingerprintService;
 			AddressPoolService = addressPoolService.Instance;
 		}
 		EventAggregator _EventAggregator;
 		private readonly KeyPathTemplates keyPathTemplates;
+		private readonly FingerprintHostedService fingerprintService;
 
 		public BitcoinDWaiters Waiters
 		{
@@ -237,7 +241,8 @@ namespace NBXplorer.Controllers
 				CryptoCode = network.CryptoCode,
 				Version = typeof(MainController).GetTypeInfo().Assembly.GetCustomAttribute<AssemblyFileVersionAttribute>().Version,
 				SupportedCryptoCodes = Waiters.All().Select(w => w.Network.CryptoCode).ToArray(),
-				IsFullySynched = true
+				IsFullySynched = true,
+				InstanceName = ExplorerConfiguration.InstanceName
 			};
 
 			GetNetworkInfoResponse networkInfo = waiter.NetworkInfo;
@@ -611,7 +616,10 @@ namespace NBXplorer.Controllers
 						Confirmations = tx.Height.HasValue ? currentHeight - tx.Height.Value + 1 : 0,
 						Timestamp = tx.Record.FirstSeen,
 						Inputs = tx.Record.SpentOutpoints.Select(o => txs.GetUTXO(o)).Where(o => o != null).ToList(),
-						Outputs = tx.Record.GetReceivedOutputs().ToList()
+						Outputs = tx.Record.GetReceivedOutputs().ToList(),
+						Replaceable = tx.Replaceable,
+						ReplacedBy = tx.ReplacedBy,
+						Replacing = tx.Replacing
 					};
 
 					if (txId == null || txId == txInfo.TransactionId)

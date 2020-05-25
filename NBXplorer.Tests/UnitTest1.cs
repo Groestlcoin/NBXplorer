@@ -19,6 +19,11 @@ using System.Threading.Tasks;
 using NBitcoin.Altcoins.Elements;
 using Xunit;
 using Xunit.Abstractions;
+using System.Net.Http;
+using System.IO;
+using Microsoft.AspNetCore.Mvc.Formatters;
+using System.Runtime.InteropServices;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace NBXplorer.Tests
 {
@@ -395,8 +400,10 @@ namespace NBXplorer.Tests
 					{
 						FallbackFeeRate = explicitFee ? null : new FeeRate(Money.Satoshis(100), 1),
 						ExplicitFee = explicitFee ? Money.Coins(0.00001m) : null,
-					}
+					},
+					DisableFingerprintRandomization = true
 				});
+				Assert.Null(psbt.Suggestions);
 				Assert.NotEqual(LockTime.Zero, psbt.PSBT.GetGlobalTransaction().LockTime);
 				psbt.PSBT.SignAll(userDerivationScheme, userExtKey);
 				Assert.True(psbt.PSBT.TryGetFee(out var fee));
@@ -612,7 +619,8 @@ namespace NBXplorer.Tests
 				ReserveChangeAddress = false,
 				MinConfirmations = 1
 			});
-
+			// We always signed with lowR so this should be always true
+			Assert.True(psbt2.Suggestions.ShouldEnforceLowR);
 			Logs.Tester.LogInformation("Let's check includeOutpoint and excludeOutpoints");
 			txId = tester.SendToAddress(newAddress.ScriptPubKey, Money.Coins(1.0m));
 			tester.Notifications.WaitForTransaction(userDerivationScheme, txId);
@@ -689,6 +697,7 @@ namespace NBXplorer.Tests
 			psbt2 = tester.Client.CreatePSBT(userDerivationScheme, new CreatePSBTRequest()
 			{
 				Version = 2,
+				RBF = false,
 				LockTime = new LockTime(1_000_000),
 				ExcludeOutpoints = new List<OutPoint>() { outpoints[0] },
 				Destinations =
@@ -732,6 +741,7 @@ namespace NBXplorer.Tests
 							}
 						},
 				DiscourageFeeSniping = false,
+				RBF = false,
 				FeePreference = new FeePreference()
 				{
 					ExplicitFee = Money.Coins(0.000001m),
@@ -847,12 +857,39 @@ namespace NBXplorer.Tests
 				var payment1 = Money.Coins(0.04m);
 				var payment2 = Money.Coins(0.08m);
 
+				Logs.Tester.LogInformation("Tx1 get spent by Tx2, then Tx3 is replacing Tx1. So Tx1 and Tx2 should also appear replaced. Tx4 then spends Tx3.");
 				var tx1 = tester.RPC.SendToAddress(a1.ScriptPubKey, payment1, replaceable: true);
 				tester.Notifications.WaitForTransaction(bob, tx1);
+				Logs.Tester.LogInformation($"Tx1: {tx1}");
 				var utxo = tester.Client.GetUTXOs(bob); //Wait tx received
 				Assert.Equal(tx1, utxo.Unconfirmed.UTXOs[0].Outpoint.Hash);
 
-				var tx = tester.RPC.GetRawTransaction(new uint256(tx1));
+				var a2 = tester.Client.GetUnused(bob, DerivationFeature.Deposit, 0);
+				var tx2psbt = (await tester.Client.CreatePSBTAsync(bob, new CreatePSBTRequest()
+				{
+					RBF = false,
+					Destinations = new List<CreatePSBTDestination>()
+					{
+						new CreatePSBTDestination()
+						{
+							SubstractFees = true,
+							Destination = a2.Address,
+							Amount = payment1,
+						}
+					},
+					FeePreference = new FeePreference()
+					{
+						ExplicitFee = Money.Satoshis(400)
+					}
+				})).PSBT;
+				tester.SignPSBT(tx2psbt);
+				tx2psbt.Finalize();
+				var tx2 = tx2psbt.ExtractTransaction();
+				await tester.Client.BroadcastAsync(tx2);
+				tester.Notifications.WaitForTransaction(bob, tx2.GetHash());
+				Logs.Tester.LogInformation($"Tx2: {tx2.GetHash()}");
+
+				var tx = tester.RPC.GetRawTransaction(tx1);
 				foreach (var input in tx.Inputs)
 				{
 					input.ScriptSig = Script.Empty; //Strip signatures
@@ -862,19 +899,26 @@ namespace NBXplorer.Tests
 				var output = tx.Outputs.First(o => o.Value == payment1);
 				output.Value = payment2;
 				var replacement = tester.RPC.SignRawTransaction(tx);
-
+				Logs.Tester.LogInformation($"Tx3: {replacement.GetHash()}");
 				tester.RPC.SendRawTransaction(replacement);
 				tester.Notifications.WaitForTransaction(bob, replacement.GetHash());
 				var prevUtxo = utxo;
 				utxo = tester.Client.GetUTXOs(bob); //Wait tx received
-				Assert.Equal(replacement.GetHash(), utxo.Unconfirmed.UTXOs[0].Outpoint.Hash);
 				Assert.Single(utxo.Unconfirmed.UTXOs);
+				Assert.Equal(replacement.GetHash(), utxo.Unconfirmed.UTXOs[0].Outpoint.Hash);
 
 				var txs = tester.Client.GetTransactions(bob);
 				Assert.Single(txs.UnconfirmedTransactions.Transactions);
 				Assert.Equal(replacement.GetHash(), txs.UnconfirmedTransactions.Transactions[0].TransactionId);
-				Assert.Single(txs.ReplacedTransactions.Transactions);
-				Assert.Equal(tx1, txs.ReplacedTransactions.Transactions[0].TransactionId);
+				Assert.Equal(tx1, txs.UnconfirmedTransactions.Transactions[0].Replacing);
+
+				Assert.Equal(2, txs.ReplacedTransactions.Transactions.Count);
+				Assert.Equal(tx2.GetHash(), txs.ReplacedTransactions.Transactions[0].TransactionId);
+				Assert.False(txs.ReplacedTransactions.Transactions[0].Replaceable);
+				Assert.Equal(tx1, txs.ReplacedTransactions.Transactions[1].TransactionId);
+				Assert.False(txs.ReplacedTransactions.Transactions[1].Replaceable);
+
+				Assert.Equal(replacement.GetHash(), txs.ReplacedTransactions.Transactions[0].ReplacedBy);
 
 				Logs.Tester.LogInformation("Rebroadcasting the replaced TX should fail");
 				var rebroadcaster = tester.GetService<RebroadcasterHostedService>();
@@ -887,16 +931,50 @@ namespace NBXplorer.Tests
 				rebroadcast = await rebroadcaster.RebroadcastAll();
 				Assert.Single(rebroadcast.Rebroadcasted); // Success
 
+				Logs.Tester.LogInformation("Now tx4 is spending the tx3");
+				var tx4psbt = (await tester.Client.CreatePSBTAsync(bob, new CreatePSBTRequest()
+				{
+					RBF = true,
+					Destinations = new List<CreatePSBTDestination>()
+					{
+						new CreatePSBTDestination()
+						{
+							SubstractFees = true,
+							Destination = a2.Address,
+							Amount = Money.Satoshis(500),
+						}
+					},
+					FeePreference = new FeePreference()
+					{
+						ExplicitFee = Money.Satoshis(400)
+					}
+				})).PSBT;
+				tester.SignPSBT(tx4psbt);
+				tx4psbt.Finalize();
+				var tx4 = tx4psbt.ExtractTransaction();
+				Logs.Tester.LogInformation($"Tx4: {tx4.GetHash()}");
+				var r = await tester.Client.BroadcastAsync(tx4);
+				tester.Notifications.WaitForTransaction(bob, tx4.GetHash());
+				txs = tester.Client.GetTransactions(bob);
+				Assert.Equal(2, txs.UnconfirmedTransactions.Transactions.Count);
+				Assert.True(txs.UnconfirmedTransactions.Transactions[0].Replaceable);
+				// Can't replace a transaction inside an unconfirmed chain.
+				Assert.False(txs.UnconfirmedTransactions.Transactions[1].Replaceable);
+
 				tester.Notifications.WaitForBlocks(tester.RPC.EnsureGenerate(1));
 
-				Logs.Tester.LogInformation("Rebroadcasting the replaced TX should clean one tx record (the unconf one) from the list");
+				Logs.Tester.LogInformation("Rebroadcasting the replaced TX should clean two tx record (tx3 and tx4) from the list");
 				await rebroadcaster.RebroadcastPeriodically(tester.Client.Network, bobSource, new[] { replacement.GetHash() });
 				rebroadcast = await rebroadcaster.RebroadcastAll();
-				// The unconf record should be cleaned
-				var cleaned = Assert.Single(rebroadcast.Cleaned);
-				Assert.Null(cleaned.BlockHash);
+				Assert.Equal(2, rebroadcast.Cleaned.Count);
+				foreach (var cleaned in rebroadcast.Cleaned)
+				{
+					Assert.Null(cleaned.BlockHash);
+				}
+				Assert.Contains(rebroadcast.Cleaned, o => o.Key.TxId == tx4.GetHash() && o.BlockHash is null);
+				Assert.Contains(rebroadcast.Cleaned, o => o.Key.TxId == replacement.GetHash());
 				// Only one missing input, as there is only one txid
-				Assert.Single(rebroadcast.MissingInputs);
+				Assert.Equal(2, rebroadcast.MissingInputs.Count);
 
 				// Nothing should be cleaned now
 				await rebroadcaster.RebroadcastPeriodically(tester.Client.Network, bobSource, new[] { replacement.GetHash() });
@@ -911,8 +989,10 @@ namespace NBXplorer.Tests
 
 				await rebroadcaster.RebroadcastPeriodically(tester.Client.Network, bobSource, new[] { replacement.GetHash() });
 				rebroadcast = await rebroadcaster.RebroadcastAll();
-				cleaned = Assert.Single(rebroadcast.Cleaned);
-				Assert.Equal(orphanedBlock, cleaned.BlockHash);
+				{
+					var cleaned = Assert.Single(rebroadcast.Cleaned);
+					Assert.Equal(orphanedBlock, cleaned.BlockHash);
+				}
 			}
 		}
 
@@ -2122,13 +2202,14 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
-		public void CanGetStatus()
+		public async Task CanGetStatus()
 		{
 			using (var tester = ServerTester.Create())
 			{
 				tester.Client.WaitServerStarted(Timeout);
-				var status = tester.Client.GetStatus();
+				var status = await tester.Client.GetStatusAsync();
 				Assert.NotNull(status.BitcoinStatus);
+				Assert.Equal("CanGetStatus", status.InstanceName);
 				Assert.True(status.IsFullySynched);
 				Assert.Equal(status.BitcoinStatus.Blocks, status.BitcoinStatus.Headers);
 				Assert.Equal(status.BitcoinStatus.Blocks, status.ChainHeight);
@@ -2139,6 +2220,8 @@ namespace NBXplorer.Tests
 				Assert.Equal(tester.CryptoCode, status.SupportedCryptoCodes[0]);
 				Assert.Single(status.SupportedCryptoCodes);
 				Assert.NotNull(status.BitcoinStatus.Capabilities);
+				var resp = await tester.HttpClient.GetAsync("/");
+				Assert.Equal("CanGetStatus", resp.Headers.GetValues("instance-name").First());
 			}
 		}
 

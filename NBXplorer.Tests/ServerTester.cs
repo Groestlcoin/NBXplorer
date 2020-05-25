@@ -22,6 +22,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using NBXplorer.Logging;
 using NBXplorer.DerivationStrategy;
+using System.Net.Http;
 
 namespace NBXplorer.Tests
 {
@@ -59,9 +60,11 @@ namespace NBXplorer.Tests
 			get; set;
 		}
 
+		public string Caller { get; }
 		public ServerTester(string directory, bool autoStart = true)
 		{
 			SetEnvironment();
+			Caller = directory;
 			var rootTestData = "TestData";
 			directory = Path.Combine(rootTestData, directory);
 			_Directory = directory;
@@ -109,6 +112,7 @@ namespace NBXplorer.Tests
 			keyValues.Add(("datadir", datadir));
 			keyValues.Add(("port", port.ToString()));
 			keyValues.Add(("network", "regtest"));
+			keyValues.Add(("instancename", Caller));
 			keyValues.Add(("chains", CryptoCode.ToLowerInvariant()));
 			keyValues.Add(("verbose", "1"));
 			keyValues.Add(($"{CryptoCode.ToLowerInvariant()}rpcauth", Explorer.GetRPCAuth()));
@@ -157,9 +161,13 @@ namespace NBXplorer.Tests
 			Host.Start();
 			Configuration = conf;
 			_Client = NBXplorerNetwork.CreateExplorerClient(Address);
+			HttpClient = ((IHttpClientFactory)Host.Services.GetService(typeof(IHttpClientFactory))).CreateClient();
+			HttpClient.BaseAddress = Address;
 			_Client.SetCookieAuth(Path.Combine(conf.DataDir, ".cookie"));
 			Notifications = _Client.CreateLongPollingNotificationSession();
 		}
+
+		public HttpClient HttpClient { get; internal set; }
 
 		string datadir;
 
@@ -343,10 +351,18 @@ namespace NBXplorer.Tests
 		}
 		public DerivationStrategyBase CreateDerivationStrategy(ExtPubKey pubKey, bool p2sh)
 		{
-			pubKey = pubKey ?? new ExtKey().Neuter();
+			key = key ?? new ExtKey();
+			pubKey = pubKey ?? key.Neuter();
 			string suffix = this.RPC.Capabilities.SupportSegwit ? "" : "-[legacy]";
 			suffix += p2sh ? "-[p2sh]" : "";
+			scriptPubKeyType = p2sh ? ScriptPubKeyType.SegwitP2SH : ScriptPubKeyType.Segwit;
 			return NBXplorerNetwork.DerivationStrategyFactory.Parse($"{pubKey.ToString(this.Network)}{suffix}");
+		}
+		ExtKey key;
+		ScriptPubKeyType scriptPubKeyType;
+		public void SignPSBT(PSBT psbt)
+		{
+			psbt.SignAll(key.AsHDScriptPubKey(scriptPubKeyType), key);
 		}
 
 		public bool RPCStringAmount

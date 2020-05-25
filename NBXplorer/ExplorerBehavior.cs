@@ -16,6 +16,7 @@ using System.Net.Http;
 using NBXplorer.Models;
 using NBXplorer.Events;
 using NBXplorer.Configuration;
+using Microsoft.AspNetCore.Mvc.Formatters;
 
 namespace NBXplorer
 {
@@ -225,7 +226,7 @@ namespace NBXplorer
 			AttachedNode.StateChanged -= AttachedNode_StateChanged;
 			AttachedNode.MessageReceived -= AttachedNode_MessageReceived;
 			_Cts.Cancel();
-			_Timer.Dispose();
+			_Timer?.Dispose();
 			_Timer = null;
 		}
 		private void AttachedNode_MessageReceived(Node node, IncomingMessage message)
@@ -305,6 +306,7 @@ namespace NBXplorer
 					};
 					await Repository.SaveEvent(blockEvent);
 					_EventAggregator.Publish(blockEvent);
+					_EventAggregator.Publish(new RawBlockEvent(block, this.Network), true);
 				}
 			}
 			catch (ObjectDisposedException)
