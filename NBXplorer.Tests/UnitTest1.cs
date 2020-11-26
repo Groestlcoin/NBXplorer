@@ -424,6 +424,7 @@ namespace NBXplorer.Tests
 					},
 					DisableFingerprintRandomization = true
 				});
+				Assert.Empty(psbt.PSBT.GlobalXPubs);
 				Assert.Null(psbt.Suggestions);
 				Assert.NotEqual(LockTime.Zero, psbt.PSBT.GetGlobalTransaction().LockTime);
 				psbt.PSBT.SignAll(userDerivationScheme, userExtKey);
@@ -828,7 +829,8 @@ namespace NBXplorer.Tests
 							AccountKey = userDerivationScheme.GetExtPubKeys().First().GetWif(tester.Network),
 							AccountKeyPath = new RootedKeyPath(rootHD, new KeyPath("49'/0'"))
 						}
-					}
+					},
+				IncludeGlobalXPub = true
 			});
 			var globalXPub = psbt2.PSBT.GlobalXPubs[userDerivationScheme.GetExtPubKeys().First().GetWif(tester.Network)];
 			Assert.Equal(new KeyPath("49'/0'"), globalXPub.KeyPath);
@@ -1843,7 +1845,7 @@ namespace NBXplorer.Tests
 				tester.Client.Track(bobPubKey);
 				var id = tester.SendToAddress(tester.AddressOf(bob, "0/1"), Money.Coins(1.0m));
 				tester.Notifications.WaitForTransaction(bobPubKey, id);
-				var repo = tester.GetService<RepositoryProvider>().GetRepository("BTC");
+				var repo = tester.GetService<RepositoryProvider>().GetRepository(tester.Network.NetworkSet.CryptoCode);
 				var transactions = await repo.GetTransactions(new DerivationSchemeTrackedSource(bobPubKey), id);
 				var tx = Assert.Single(transactions);
 				var timestamp = tx.FirstSeen;
