@@ -18,7 +18,7 @@ namespace NBXplorer.Configuration
 	{
 		protected override CommandLineApplication CreateCommandLineApplicationCore()
 		{
-			var provider = new NBXplorerNetworkProvider(NetworkType.Mainnet);
+			var provider = new NBXplorerNetworkProvider(ChainName.Mainnet);
 			var chains = string.Join(",", provider.GetAll().Select(n => n.CryptoCode.ToLowerInvariant()).ToArray());
 			CommandLineApplication app = new CommandLineApplication(true)
 			{
@@ -29,6 +29,7 @@ namespace NBXplorer.Configuration
 			app.Option("-n | --network", $"Set the network among (mainnet,testnet,regtest) (default: mainnet)", CommandOptionType.SingleValue);
 			app.Option("--testnet | -testnet", $"Use testnet", CommandOptionType.BoolValue);
 			app.Option("--regtest | -regtest", $"Use regtest", CommandOptionType.BoolValue);
+			app.Option("--signet | -signet", $"Use signet", CommandOptionType.BoolValue);
 			app.Option("--chains", $"Chains to support comma separated (default: btc, available: {chains})", CommandOptionType.SingleValue);
 
 			app.Option($"--dbcache", $"If more than 0, the size of the cache for the database, in MB. Else, no limit on the size of the cache. (default: 50)", CommandOptionType.SingleValue);
@@ -99,7 +100,7 @@ namespace NBXplorer.Configuration
 			return Path.Combine(chainDir, fileName);
 		}
 
-		public static NetworkType GetNetworkType(IConfiguration conf)
+		public static ChainName GetNetworkType(IConfiguration conf)
 		{
 			var network = conf.GetOrDefault<string>("network", null);
 			if(network != null)
@@ -109,11 +110,11 @@ namespace NBXplorer.Configuration
 				{
 					throw new ConfigException($"Invalid network parameter '{network}'");
 				}
-				return n.NetworkType;
+				return n.ChainName;
 			}
-			var net = conf.GetOrDefault<bool>("regtest", false) ? NetworkType.Regtest :
-						conf.GetOrDefault<bool>("testnet", false) ? NetworkType.Testnet : NetworkType.Mainnet;
-
+			var net = conf.GetOrDefault<bool>("regtest", false) ? ChainName.Regtest :
+						conf.GetOrDefault<bool>("testnet", false) ? ChainName.Testnet :
+						conf.GetOrDefault<bool>("signet", false) ? new ChainName("signet") : ChainName.Mainnet;
 			return net;
 		}
 
@@ -160,7 +161,7 @@ namespace NBXplorer.Configuration
 			builder.AppendLine("## Expose the node RPC through the REST API");
 			builder.AppendLine($"#exposerpc=0");
 			builder.AppendLine("## What crypto currencies is supported");
-			var chains = string.Join(',', new NBXplorerNetworkProvider(NetworkType.Mainnet)
+			var chains = string.Join(',', new NBXplorerNetworkProvider(ChainName.Mainnet)
 				.GetAll()
 				.Select(c => c.CryptoCode.ToLowerInvariant())
 				.ToArray());
